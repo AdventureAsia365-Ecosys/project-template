@@ -1,0 +1,8 @@
+{
+  "_comment": "Code-health limits (playbook 03-setup). A file or function over a limit fails CI unless the baseline lists it with its current value; the baseline only shrinks. These are code-review guard values of CI, not product thresholds.",
+  "max_complexity": 10,
+  "max_file_lines": 800,
+  "extensions": [".py", ".ts", ".tsx", ".js", ".mjs"],
+  "exclude_dirs": [".git", "node_modules", ".venv", ".next", "__pycache__", ".claude", "tools"],
+  "baseline": {}
+}

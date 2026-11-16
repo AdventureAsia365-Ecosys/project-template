@@ -1,0 +1,22 @@
+{
+  "required_status_checks": {
+    "strict": false,
+    "contexts": [
+      "Fast checks",{% if has_api %}
+      "API tests",{% endif %}{% if has_web %}
+      "Web typecheck and build",{% endif %}{% if has_db %}
+      "Migrations apply on an empty database",{% endif %}{% if has_lambda %}
+      "Lambda tests",{% endif %}
+      "PR title",
+      "Docs lint",
+      "gitleaks",
+      "Workflow lint"
+    ]
+  },
+  "enforce_admins": false,
+  "required_pull_request_reviews": null,
+  "restrictions": null,
+  "required_linear_history": true,
+  "allow_force_pushes": false,
+  "allow_deletions": false
+}

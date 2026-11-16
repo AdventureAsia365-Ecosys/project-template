@@ -1,0 +1,26 @@
+name: Eval regression
+# Runs the eval set when a prompt, the eval set or the model client changes. Model calls are faked or replayed from
+# recordings: this workflow never calls a paid model. A score under the recorded floor fails the PR.
+on:
+  pull_request:
+    paths:
+      - "prompts/**"
+      - "evals/**"
+      - "api/app/model_ledger.py"
+
+permissions:
+  contents: read
+
+jobs:
+  evals:
+    name: Eval regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Run the eval set
+        run: |
+          if [ -d evals ]; then python3 -m unittest discover -s evals -p 'eval_*.py'; else echo "no eval set yet (evals/)"; fi

@@ -1,0 +1,30 @@
+name: Docs lint
+# Markdown style (.markdownlint-cli2.jsonc), offline relative links (tools/check_links.py) and no literal resource ID
+# (tools/resource_id_lint.py). Runs on every PR: docs are code here.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-lint-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  docs:
+    name: Docs lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Links
+        run: python3 tools/check_links.py .
+      - name: Resource IDs
+        if: ${{ !cancelled() }}
+        run: python3 tools/resource_id_lint.py --mode error .
+      - name: Markdown style
+        if: ${{ !cancelled() }}
+        uses: DavidAnson/markdownlint-cli2-action@696eb3f2509270d7b882d2aa68347bc676e7af34 # v25.0.0
+        with:
+          globs: "**/*.md"

@@ -1,0 +1,49 @@
+# {{ project_name }}
+
+{% if repo_layout == 'root' -%}
+Root repo of {{ project_name }}: the docs, the decisions and the agent setup shared by every app repo. Each app has its
+own repo, generated from the same template with the layout "app repo".
+{%- elif repo_layout == 'app' -%}
+An app repo of {{ project_name }}. The project's docs, decisions and playbook live in the root repo.
+{%- else -%}
+{{ project_name }}: docs, decisions, agent setup and code in one repo.
+{%- endif %}
+
+## Start here
+
+| You are | Read |
+|---|---|
+| New to the project | [`CONTEXT.md`](CONTEXT.md), then [`docs/README.md`](docs/README.md) |
+| Setting the project up | [`docs/day-1.md`](docs/day-1.md), the day-1 checklist |
+| An agent | [`AGENTS.md`](AGENTS.md) |
+
+## Layout
+
+| Path | What |
+|---|---|
+| `docs/` | Catalog, playbook, templates, decisions (`docs/adr/`), lessons, sessions |
+{%- if has_api %}
+| `api/` | Python API (FastAPI): `/health`, `/health/ready`, settings registry, job table and worker, deploy gate |
+| `db/migrations/` | SQL migrations, keys `{{ migration_prefix }}-NNN` |
+{%- endif %}
+{%- if has_web %}
+| `web/` | Next.js web app (BFF): security headers, cross-site write guard |
+{%- endif %}
+{%- if has_lambda %}
+| `lambda/` | AWS Lambda function (Python) |
+{%- endif %}
+{%- if has_infra %}
+| `infra/` | Terraform root: tags, budget alert, CI deploy role (OIDC), state backend |
+{%- endif %}
+| `tools/` | Docs and safety checks run by CI and the pre-push hook |
+| `.claude/` | Agent hooks (guardrails) and generic skills |
+
+## Checks
+
+```bash
+bash scripts/setup.sh        # once: hooks path, so the pre-push hook runs
+bash scripts/pre-push.sh     # the fast checks the hook runs
+```
+
+Generated from the project template (version in `.copier-answers.yml`); update with `copier update`
+(see [`docs/playbook/adoption.md`](docs/playbook/adoption.md)).

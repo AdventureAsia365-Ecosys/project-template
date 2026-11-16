@@ -1,0 +1,25 @@
+name: Kit drift
+# Weekly (and on demand): are the copies behind the source repo's default branch? Red means a source changed since
+# the last sync: run `python3 tools/kit_copies.py sync --source <source checkout>`, commit `chore: sync kit copies`
+# (a `fix:` or `feat:` title when the change should release) and let release-please cut the release.
+on:
+  schedule:
+    - cron: "41 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    name: Copies match the source head
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ vars.KIT_SOURCE_REPO }}
+          path: _source
+          persist-credentials: false
+      - run: python3 tools/kit_copies.py check --source _source

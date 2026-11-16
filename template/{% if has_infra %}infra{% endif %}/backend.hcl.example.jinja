@@ -1,0 +1,6 @@
+# Copy to backend.hcl (git-ignored values) and fill in. Never commit account IDs.
+bucket       = "<state bucket name>"
+key          = "{{ project_slug }}/dev/terraform.tfstate"
+region       = "<region>"
+use_lockfile = true
+encrypt      = true

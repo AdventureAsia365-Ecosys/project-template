@@ -1,0 +1,26 @@
+variable "region" {
+  description = "Region of the Dev environment"
+  type        = string
+}
+
+variable "environment" {
+  description = "Environment name, used in tags and resource names"
+  type        = string
+  default     = "dev"
+}
+
+variable "github_repository" {
+  description = "The repo whose CI may assume the deploy role, as <org>/<repo>"
+  type        = string
+  default     = "<org>/{{ project_slug }}"
+}
+
+variable "monthly_budget_usd" {
+  description = "Budget alert threshold: the monthly cost quoted to the business owner on day 1 (step 6), never a guess"
+  type        = number
+}
+
+variable "budget_alert_emails" {
+  description = "Addresses that receive the budget alerts (a team list, not a person)"
+  type        = list(string)
+}

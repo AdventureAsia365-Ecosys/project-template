@@ -1,0 +1,53 @@
+name: Post-deploy verify
+# The "verified live" step of the Definition of Done: the health URL answers 200 and reports the commit that was
+# deployed. Run it after each deploy (by hand, or as the last job of the deploy workflow through workflow_call).
+on:
+  workflow_dispatch:
+    inputs:
+      health_url:
+        description: Health URL of the service (https://<host>/health)
+        required: true
+      expected_sha:
+        description: Commit SHA that must be live (default - the commit this run is on)
+        required: false
+  workflow_call:
+    inputs:
+      health_url:
+        type: string
+        required: true
+      expected_sha:
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify live
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Health answers with the deployed commit
+        env:
+          URL: ${{ inputs.health_url }}
+          WANT: ${{ inputs.expected_sha || github.sha }}
+        shell: python3 {0}
+        run: |
+          import json, os, sys, time, urllib.request
+          url, want = os.environ["URL"], os.environ["WANT"]
+          last = ""
+          for attempt in range(10):
+              try:
+                  with urllib.request.urlopen(url, timeout=10) as r:
+                      body = json.loads(r.read().decode())
+                  sha = str(body.get("sha", ""))
+                  if r.status == 200 and sha and (sha.startswith(want) or want.startswith(sha)):
+                      print(f"live: {url} answers 200 with {sha}")
+                      sys.exit(0)
+                  last = f"status {r.status}, sha {sha or 'missing'}"
+              except Exception as e:  # noqa: BLE001 - report any failure and retry
+                  last = str(e)
+              time.sleep(15)
+          print(f"::error::{url} is not serving {want} ({last})")
+          sys.exit(1)

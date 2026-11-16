@@ -1,0 +1,15 @@
+// Markdown style for docs (docs/STYLE.md). Used by the docs-lint workflow and by editors with the markdownlint
+// extension. Local run: npx markdownlint-cli2@0.23.2 '**/*.md'
+{
+  "config": {
+    "default": true,
+    "MD013": false, // line length: prose wraps at ~120 by convention, tables do not
+    "MD033": false, // inline HTML: comments, <details>
+    "MD041": false, // first line: front matter comes first
+    "MD024": { "siblings_only": true },
+    "MD025": { "front_matter_title": "" },
+    "MD060": false // table pipes: `| a | b |` over `|---|---|`
+  },
+  // Journals keep their history as written.
+  "ignores": ["docs/sessions/**", "docs/implementation-notes/**", "**/node_modules/**", "CHANGELOG.md"]
+}

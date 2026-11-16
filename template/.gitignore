@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv
+venv
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.ruff_cache/
+
+# Node
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+
+# Local only
+.env
+.env.*
+!.env.example
+.tmp-session/
+.DS_Store

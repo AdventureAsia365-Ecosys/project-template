@@ -1,0 +1,89 @@
+# {{ project_name }} - context
+
+<!-- The project's architecture on the arc42 canvas with C4 views (template: docs/templates/context-arc42.md).
+Fill it on day 1 (step 4 of docs/day-1.md); keep it current: a change of a boundary or an owner updates this page in
+the same PR. Delete this comment when the page is filled. -->
+
+## 1. Goal and quality targets
+
+- **Goal:** <one sentence, the charter's success metric>
+- **Quality targets:** <the three ISO 25010 axes that matter most, each with a measurable target>
+
+## 2. Constraints
+
+- <regulation, budget, platform, team>
+
+## 3. Context (C4 level 1)
+
+<!-- Who uses the system and which outside systems it talks to. A Mermaid C4Context diagram or a table. -->
+
+| Actor or system | Talks to us how | Owner |
+|---|---|---|
+| <user role> | <web, API> | <team> |
+
+## 4. Solution strategy
+
+<!-- Stack, data ownership, identity, environments: each one an ADR in docs/adr/. -->
+
+## 5. Building blocks (C4 level 2)
+
+| Container | Tech | Owns (data, schema) | Repo path |
+|---|---|---|---|
+{%- if has_api %}
+| API | Python, FastAPI | schema `{{ project_slug | replace('-', '_') }}` | `api/` |
+| Worker | Python (same image as the API) | the job table | `api/app/jobs.py` |
+{%- endif %}
+{%- if has_web %}
+| Web | Next.js (BFF) | none | `web/` |
+{%- endif %}
+{%- if has_lambda %}
+| Function | Python on AWS Lambda | none | `lambda/` |
+{%- endif %}
+
+## 6. Runtime view
+
+<!-- The two or three flows that matter, one short sequence each. -->
+
+## 7. Deployment
+
+| Environment | Where | How it is deployed |
+|---|---|---|
+| Dev | <cloud account, region> | CI on merge to {{ default_branch }} |
+
+## 8. Cross-cutting rules
+
+- Settings: every threshold, limit, cap or retention window is an admin-editable setting with a seeded default
+  (`docs/templates/settings-entry.md`), never a code literal.
+- Migrations: expand / contract (`docs/templates/migration-file.md`), applied by CI, never from a laptop.
+{%- if multi_tenant %}
+- Tenancy: every tenant table has row-level security with FORCE; the API sets the tenant per transaction.
+{%- endif %}
+{%- if ai_features %}
+- AI: every model call is written to the call ledger with its billed tokens and cost (`docs/ai/README.md`).
+{%- endif %}
+
+## 9. Decisions
+
+See [`docs/adr/README.md`](docs/adr/README.md).
+
+## 10. Risks and technical debt
+
+See the risk register (`docs/templates/risk-register.md` once filled: `docs/risk-register.md`).
+
+## 11. Run it locally
+{%- if has_api %}
+
+```bash
+cd api && python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements-dev.txt && pytest -q
+```
+{%- endif %}
+{%- if has_web %}
+
+```bash
+cd web && npm install && npm run typecheck && npm run dev
+```
+{%- endif %}
+{%- if not has_api and not has_web %}
+
+<!-- How to run and test this repo locally. -->
+{%- endif %}

@@ -1,0 +1,149 @@
+name: Kit CI
+# Checks of the template repo itself (a generated project gets its own workflows from template/.github/):
+#   - tools: unit tests of tools/ and tests/ (kit transform, copy guard, leak scan);
+#   - byte-copy guard: every file listed in kit-sources.txt equals the kit transform of its source at the commit in
+#     .kit-source-ref (source repo: Actions variable KIT_SOURCE_REPO, a public repo);
+#   - leak scans: resource-ID lint (error mode) and the denylist scan (Actions variable LEAK_DENYLIST, one regex per
+#     line, kept out of this public repo) over the files and over the commit metadata of the whole history (author,
+#     committer, message: a file scan cannot see them); links; Markdown style;
+#   - render: generate the template with four answer sets and run each generated project's checks.
+# Secrets: none. Actions pinned by commit SHA. Cost: free standard runners on a public repo.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kit-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  COPIER_VERSION: 9.19.1
+  ACTIONLINT_VERSION: 1.7.7
+  ACTIONLINT_SHA256: 023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
+
+jobs:
+  tools:
+    name: Tools tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: python3 -m unittest discover -s tests -p 'test_*.py'
+
+  copies:
+    name: Byte-copy guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Source repo is configured
+        env:
+          SOURCE_REPO: ${{ vars.KIT_SOURCE_REPO }}
+        run: |
+          if [ -z "$SOURCE_REPO" ]; then echo "::error::Set the Actions variable KIT_SOURCE_REPO (<owner>/<repo> of the source)"; exit 1; fi
+          echo "SOURCE_REF=$(tr -d '[:space:]' < .kit-source-ref)" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ vars.KIT_SOURCE_REPO }}
+          ref: ${{ env.SOURCE_REF }}
+          path: _source
+          persist-credentials: false
+      - run: python3 tools/kit_copies.py check --source _source
+
+  scans:
+    name: Leak scans
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Resource-ID lint
+        run: python3 template/tools/resource_id_lint.py --mode error .
+      - name: Denylist scan
+        if: ${{ !cancelled() }}
+        env:
+          LEAK_DENYLIST: ${{ vars.LEAK_DENYLIST }}
+        run: |
+          f=$(mktemp)
+          printf '%s\n' "$LEAK_DENYLIST" > "$f"
+          python3 tools/kit_copies.py scan --denylist "$f" .
+      - name: Denylist scan of the commit metadata (author, committer, message)
+        if: ${{ !cancelled() }}
+        env:
+          LEAK_DENYLIST: ${{ vars.LEAK_DENYLIST }}
+        run: |
+          f=$(mktemp)
+          printf '%s\n' "$LEAK_DENYLIST" > "$f"
+          python3 tools/kit_copies.py scan-history --denylist "$f" .
+      # The pages under template/ are checked after rendering (Render matrix): some links there point at .jinja files.
+      - name: Links
+        if: ${{ !cancelled() }}
+        run: python3 template/tools/check_links.py README.md VERSIONING.md .github
+      - name: Markdown style
+        if: ${{ !cancelled() }}
+        uses: DavidAnson/markdownlint-cli2-action@696eb3f2509270d7b882d2aa68347bc676e7af34 # v25.0.0
+        with:
+          globs: "**/*.md"
+
+  render:
+    name: Render matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_wrapper: false
+      - name: Install copier, the API test dependencies and actionlint (pinned)
+        run: |
+          python -m pip install "copier==${COPIER_VERSION}"
+          python -m venv /tmp/apivenv
+          /tmp/apivenv/bin/pip install -r "template/{% if has_api %}api{% endif %}/requirements-dev.txt"
+          curl -sSfL -o al.tgz "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  al.tgz" | sha256sum -c -
+          tar -xzf al.tgz -C /tmp actionlint && rm al.tgz
+      - name: Render and check every variant
+        run: |
+          git config --global user.name ci && git config --global user.email ci@localhost
+          python3 tests/render_matrix.py --venv /tmp/apivenv --actionlint /tmp/actionlint --markdownlint
+
+  workflows:
+    name: Workflow lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: actionlint (pinned, sha256 checked) over this repo's workflows
+        run: |
+          curl -sSfL -o al.tgz "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  al.tgz" | sha256sum -c -
+          tar -xzf al.tgz actionlint && rm al.tgz
+          ./actionlint -color .github/workflows/*.yml
+      - name: Actions pinned by commit SHA (this repo and the template)
+        shell: python3 {0}
+        run: |
+          import pathlib, re, sys
+          bad = []
+          for root in (pathlib.Path(".github"), pathlib.Path("template/.github")):
+              for p in sorted(root.rglob("*")):
+                  if not p.is_file() or not re.search(r"\.ya?ml(\.jinja)?$", p.name):
+                      continue
+                  for n, line in enumerate(p.read_text().splitlines(), start=1):
+                      m = re.search(r"uses:\s*([^\s#]+)", line)
+                      if m and not m.group(1).startswith(("./", "docker://")) and not re.search(r"@[0-9a-f]{40}$", m.group(1)):
+                          bad.append(f"{p}:{n}: {m.group(1)} is not pinned by a full commit SHA")
+          print("\n".join(bad) or "every action is pinned")
+          sys.exit(1 if bad else 0)

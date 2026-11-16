@@ -1,0 +1,172 @@
+# Copier template of the new-project kit. Generate:   copier copy --trust gh:<org>/project-template <dir>
+# (or a local checkout path). Update a generated project: copier update   (reads .copier-answers.yml).
+# Versions are git tags vMAJOR.MINOR.PATCH (VERSIONING.md). Nothing here runs a task: --trust is not needed today.
+
+_min_copier_version: "9.4.0"
+_subdirectory: template
+_answers_file: .copier-answers.yml
+_templates_suffix: .jinja
+_envops:
+  keep_trailing_newline: true
+
+# Major versions that rename or move files add a migration here (VERSIONING.md), for example:
+#   - version: v2.0.0
+#     command: "git mv docs/old-name.md docs/new-name.md"
+#     when: "{{ _stage == 'before' }}"
+_migrations: []
+
+_message_after_copy: |
+  Generated {{ project_name }} from the project template.
+  Next: open docs/day-1.md and work through the day-1 checklist (step 2 sets up git, the hooks and the remote).
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Day-1 questionnaire (design section 5.4). Every answer is recorded in .copier-answers.yml.
+
+project_name:
+  type: str
+  help: Project name, as people say it (for example "Harbor Notes")
+  validator: "{% if not project_name.strip() %}A name is required{% endif %}"
+
+project_slug:
+  type: str
+  help: Slug for repos, packages and the database schema (lowercase letters, digits, hyphens)
+  default: "{{ project_name.strip().lower().replace(' ', '-').replace('_', '-') }}"
+  validator: >-
+    {% if not (project_slug | regex_search('^[a-z][a-z0-9-]{1,38}[a-z0-9]$')) %}Use 3 to 40 lowercase letters,
+    digits and hyphens, starting with a letter{% endif %}
+
+repo_layout:
+  type: str
+  help: Repo layout
+  choices:
+    Single repo (docs, agents and the app code together): single
+    Root repo of several (docs and agents only; each app gets its own repo): root
+    App repo inside a root-plus-apps project (app code; the docs live in the root repo): app
+  default: single
+
+stacks:
+  type: str
+  help: Stacks in this repo
+  multiselect: true
+  choices:
+    Python API (FastAPI): python-api
+    Next.js web (BFF): nextjs-web
+    AWS Lambda function (Python): lambda
+  default: [python-api, nextjs-web]
+  when: "{{ repo_layout != 'root' }}"
+
+multi_tenant:
+  type: bool
+  help: Multi-tenant (adds row-level security with FORCE and an isolation probe test; the tenant-scoped pool and the fair-share job gate are not in 1.0.0, see CHANGELOG.md)
+  default: false
+  when: "{{ repo_layout != 'root' and 'python-api' in stacks }}"
+
+ai_features:
+  type: bool
+  help: AI features (adds the model-call ledger, the prompt register, the AI use register and an eval workflow; the model gateway core is not in 1.0.0, see CHANGELOG.md)
+  default: false
+
+cloud:
+  type: str
+  help: Cloud
+  choices:
+    AWS: aws
+    None (no infrastructure code yet): none
+  default: aws
+
+tracker:
+  type: str
+  help: Issue tracker
+  choices:
+    Linear: linear
+    GitHub Issues: github
+    Jira: jira
+  default: linear
+
+issue_key_prefix:
+  type: str
+  help: Issue key prefix of the tracker (for example HN for HN-123)
+  default: "{{ 'GH' if tracker == 'github' else '' }}"
+  validator: "{% if not (issue_key_prefix | regex_search('^[A-Z][A-Z0-9]{0,9}$')) %}Use 1 to 10 capital letters or digits, starting with a letter{% endif %}"
+
+migration_prefix:
+  type: str
+  help: Prefix of the migration keys of this repo's database schema (keys look like <prefix>-001)
+  default: "{{ issue_key_prefix.lower() }}"
+  validator: "{% if not (migration_prefix | regex_search('^[a-z][a-z0-9]{0,9}$')) %}Use 1 to 10 lowercase letters or digits{% endif %}"
+  when: "{{ repo_layout != 'root' and 'python-api' in stacks }}"
+
+primary_language:
+  type: str
+  help: Primary language of the docs (ISO 639-1 code)
+  default: en
+  validator: "{% if not (primary_language | regex_search('^[a-z]{2}$')) %}Use a two-letter code{% endif %}"
+
+secondary_language:
+  type: str
+  help: Secondary language for translated pages, kept as <page>.<code>.md (leave empty for none)
+  default: ""
+  validator: "{% if secondary_language and not (secondary_language | regex_search('^[a-z]{2}$')) %}Use a two-letter code or leave it empty{% endif %}"
+
+team_shape:
+  type: str
+  help: Team shape (playbook README, roles)
+  choices:
+    Tech lead plus agents: lead-plus-agents
+    Several engineers plus agents: engineers-plus-agents
+    Engineers only: engineers-only
+  default: lead-plus-agents
+
+default_branch:
+  type: str
+  help: Default branch
+  default: main
+  validator: "{% if not (default_branch | regex_search('^[A-Za-z0-9._/-]+$')) %}Not a valid branch name{% endif %}"
+
+license:
+  type: str
+  help: License of the generated project
+  choices:
+    None (all rights reserved; add one later): none
+    MIT: MIT
+    Apache 2.0: Apache-2.0
+  default: none
+
+copyright_holder:
+  type: str
+  help: Copyright holder named in the license
+  default: "{{ project_name }} authors"
+  when: "{{ license != 'none' }}"
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Derived values (never asked, never recorded).
+
+has_api:
+  type: bool
+  default: "{{ repo_layout != 'root' and 'python-api' in stacks }}"
+  when: false
+
+has_web:
+  type: bool
+  default: "{{ repo_layout != 'root' and 'nextjs-web' in stacks }}"
+  when: false
+
+has_lambda:
+  type: bool
+  default: "{{ repo_layout != 'root' and 'lambda' in stacks }}"
+  when: false
+
+has_db:
+  type: bool
+  default: "{{ repo_layout != 'root' and 'python-api' in stacks }}"
+  when: false
+
+has_infra:
+  type: bool
+  default: "{{ cloud == 'aws' and repo_layout != 'app' }}"
+  when: false
+
+has_agents:
+  type: bool
+  default: "{{ team_shape != 'engineers-only' }}"
+  when: false

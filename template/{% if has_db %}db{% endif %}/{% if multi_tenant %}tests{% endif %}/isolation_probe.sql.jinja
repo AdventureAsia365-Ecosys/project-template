@@ -1,0 +1,27 @@
+-- Tenant isolation probe: as the app role, a row written for tenant A is invisible to tenant B and to a session with
+-- no tenant. CI runs it after the migrations; any visible row raises and fails the job. Invented tenant names.
+BEGIN;
+INSERT INTO {{ project_slug | replace('-', '_') }}.tenant (id, name) VALUES
+  ('00000000-0000-4000-8000-00000000000a', 'Probe tenant A'),
+  ('00000000-0000-4000-8000-00000000000b', 'Probe tenant B')
+ON CONFLICT (id) DO NOTHING;
+SET LOCAL ROLE {{ project_slug | replace('-', '_') }}_app;
+SELECT set_config('app.tenant_id', '00000000-0000-4000-8000-00000000000a', true);
+INSERT INTO {{ project_slug | replace('-', '_') }}.tenant_note (tenant_id, body) VALUES ('00000000-0000-4000-8000-00000000000a', 'probe');
+SELECT set_config('app.tenant_id', '00000000-0000-4000-8000-00000000000b', true);
+DO $$
+BEGIN
+  IF (SELECT count(*) FROM {{ project_slug | replace('-', '_') }}.tenant_note) <> 0 THEN
+    RAISE EXCEPTION 'tenant isolation broken: tenant B sees tenant A rows';
+  END IF;
+END
+$$;
+SELECT set_config('app.tenant_id', '', true);
+DO $$
+BEGIN
+  IF (SELECT count(*) FROM {{ project_slug | replace('-', '_') }}.tenant_note) <> 0 THEN
+    RAISE EXCEPTION 'tenant isolation broken: a session without a tenant sees rows';
+  END IF;
+END
+$$;
+ROLLBACK;

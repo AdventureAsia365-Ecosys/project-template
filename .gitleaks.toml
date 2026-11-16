@@ -1,0 +1,18 @@
+# gitleaks rules: the default rule set of the pinned gitleaks version (secret-scan.yml) plus the rules below.
+# Prefer a narrow allowlist entry (a class of invented values) over a fingerprint; never an inline allow comment.
+title = "project gitleaks config"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "dsn-with-password"
+description = "A connection string with an embedded password"
+regex = '''(?i)\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^\s:/@]+:([^\s@/]{6,})@'''
+secretGroup = 1
+keywords = ["://"]
+
+[[rules.allowlists]]
+description = "Placeholders and local test passwords"
+regexTarget = "secret"
+regexes = ['''^(?:\$\{?[A-Z_]+\}?|<[^>]+>|password|postgres|test|example|changeme|local)$''']

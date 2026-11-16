@@ -1,0 +1,101 @@
+-- {{ migration_prefix }}-001: schema, roles, schema versions, settings, job table{% if multi_tenant %}, tenancy (RLS with FORCE){% endif %}{% if ai_features %}, model-call ledger{% endif %}.
+-- migrate: expand
+-- Template: docs/templates/migration-file.md. Applied by CI in key order, never from a laptop. Idempotent: a second
+-- run is a no-op (the CI migration job applies every file twice). Role passwords are set outside the repo.
+BEGIN;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{{ project_slug | replace('-', '_') }}_owner') THEN
+    CREATE ROLE {{ project_slug | replace('-', '_') }}_owner NOLOGIN;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{{ project_slug | replace('-', '_') }}_app') THEN
+    CREATE ROLE {{ project_slug | replace('-', '_') }}_app NOLOGIN;
+  END IF;
+END
+$$;
+
+CREATE SCHEMA IF NOT EXISTS {{ project_slug | replace('-', '_') }} AUTHORIZATION {{ project_slug | replace('-', '_') }}_owner;
+GRANT USAGE ON SCHEMA {{ project_slug | replace('-', '_') }} TO {{ project_slug | replace('-', '_') }}_app;
+
+CREATE TABLE IF NOT EXISTS {{ project_slug | replace('-', '_') }}.schema_versions (
+  key        text PRIMARY KEY,
+  applied_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Settings registry (api/app/settings_registry.py): the current value of each admin-editable setting, and its audit.
+CREATE TABLE IF NOT EXISTS {{ project_slug | replace('-', '_') }}.settings (
+  key        text PRIMARY KEY,
+  value      integer NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS {{ project_slug | replace('-', '_') }}.settings_audit (
+  id         bigserial PRIMARY KEY,
+  key        text NOT NULL,
+  old_value  integer NOT NULL,
+  new_value  integer NOT NULL,
+  changed_by text NOT NULL,
+  changed_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Job table (api/app/jobs.py): one row per piece of background work.
+CREATE TABLE IF NOT EXISTS {{ project_slug | replace('-', '_') }}.job (
+  id          bigserial PRIMARY KEY,
+  kind        text NOT NULL,
+  payload     jsonb NOT NULL DEFAULT '{}'::jsonb,
+  status      text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'done', 'failed')),
+  attempts    integer NOT NULL DEFAULT 0,
+  lease_until timestamptz,
+  error       text,
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS job_claim_idx ON {{ project_slug | replace('-', '_') }}.job (created_at) WHERE status IN ('queued', 'running');
+GRANT SELECT, INSERT, UPDATE ON {{ project_slug | replace('-', '_') }}.settings, {{ project_slug | replace('-', '_') }}.job TO {{ project_slug | replace('-', '_') }}_app;
+GRANT SELECT, INSERT ON {{ project_slug | replace('-', '_') }}.settings_audit TO {{ project_slug | replace('-', '_') }}_app;
+GRANT USAGE ON ALL SEQUENCES IN SCHEMA {{ project_slug | replace('-', '_') }} TO {{ project_slug | replace('-', '_') }}_app;
+{%- if multi_tenant %}
+
+-- Tenancy: every tenant-owned table carries tenant_id, has row-level security with FORCE, and the API sets
+-- app.tenant_id per transaction (SET LOCAL). The isolation probe test reads across tenants and must see nothing.
+CREATE TABLE IF NOT EXISTS {{ project_slug | replace('-', '_') }}.tenant (
+  id         uuid PRIMARY KEY,
+  name       text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS {{ project_slug | replace('-', '_') }}.tenant_note (
+  id         bigserial PRIMARY KEY,
+  tenant_id  uuid NOT NULL REFERENCES {{ project_slug | replace('-', '_') }}.tenant (id),
+  body       text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE {{ project_slug | replace('-', '_') }}.tenant_note ENABLE ROW LEVEL SECURITY;
+ALTER TABLE {{ project_slug | replace('-', '_') }}.tenant_note FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON {{ project_slug | replace('-', '_') }}.tenant_note;
+CREATE POLICY tenant_isolation ON {{ project_slug | replace('-', '_') }}.tenant_note
+  USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+  WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+GRANT SELECT ON {{ project_slug | replace('-', '_') }}.tenant TO {{ project_slug | replace('-', '_') }}_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON {{ project_slug | replace('-', '_') }}.tenant_note TO {{ project_slug | replace('-', '_') }}_app;
+{%- endif %}
+{%- if ai_features %}
+
+-- Model-call ledger: one row per model call, refused and failed calls included, with the billed tokens and cost.
+CREATE TABLE IF NOT EXISTS {{ project_slug | replace('-', '_') }}.model_call_log (
+  id             bigserial PRIMARY KEY,
+  stage          text NOT NULL,
+  role           text NOT NULL,
+  provider       text NOT NULL,
+  model          text NOT NULL,
+  outcome        text NOT NULL CHECK (outcome IN ('ok', 'refused', 'error')),
+  input_tokens   integer NOT NULL DEFAULT 0,
+  output_tokens  integer NOT NULL DEFAULT 0,
+  cost_usd       numeric(12, 6) NOT NULL DEFAULT 0,
+  latency_ms     integer,
+  created_at     timestamptz NOT NULL DEFAULT now()
+);
+GRANT SELECT, INSERT ON {{ project_slug | replace('-', '_') }}.model_call_log TO {{ project_slug | replace('-', '_') }}_app;
+{%- endif %}
+
+INSERT INTO {{ project_slug | replace('-', '_') }}.schema_versions (key) VALUES ('{{ migration_prefix }}-001') ON CONFLICT (key) DO NOTHING;
+
+COMMIT;

@@ -1,0 +1,21 @@
+## What and why
+
+<!-- One or two sentences. The title is `<type>: <description>` with no issue key. -->
+
+Refs {{ issue_key_prefix }}-<n>
+
+## How it was checked
+
+- [ ] Tests added or changed with the code; `bash scripts/pre-push.sh` green
+- [ ] Docs and `CONTEXT.md` updated when a boundary, owner or rule changed
+- [ ] Implementation note updated (`docs/implementation-notes/{{ issue_key_prefix }}-<n>.md`)
+- [ ] No new threshold as a literal (settings registry), no resource ID or secret in the diff
+
+## Risk class
+
+<!-- auth or permissions / migration or schema / CI, workflow or secrets / data deletion / none.
+A risky class needs an independent review before merge. -->
+
+## Live steps after merge
+
+<!-- Deploy, migration apply, the health check with the expected SHA, screenshots. -->

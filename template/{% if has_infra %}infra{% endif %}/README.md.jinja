@@ -1,0 +1,15 @@
+# Infrastructure (Terraform)
+
+Dev skeleton of {{ project_name }}: tags on every resource, a monthly budget alert at the approved figure and the CI
+deploy role through GitHub OIDC. Day-1 step 6 ([`../docs/day-1.md`](../docs/day-1.md)) creates it after the business
+owner said yes to the quoted monthly cost.
+
+```bash
+cp backend.hcl.example backend.hcl   # fill in; backend.hcl stays out of git
+terraform init -backend-config=backend.hcl
+terraform plan -var region=<region> -var monthly_budget_usd=<approved figure> -var 'budget_alert_emails=["<team list>"]'
+```
+
+Rules: apply only from the default branch (the agent shell guard refuses it elsewhere); every new paid resource
+comes with its monthly cost in the PR body and an explicit yes; never commit account IDs or ARNs (look them up with
+`terraform output`).

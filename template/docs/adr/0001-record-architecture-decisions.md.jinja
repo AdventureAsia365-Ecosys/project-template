@@ -1,0 +1,23 @@
+# 0001. Record architecture decisions
+
+- **Status:** Accepted ({{ '%d/%m/%Y' | strftime }}).
+- **Scope:** every repo of {{ project_name }}.
+
+## Context
+
+Decisions that are hard to reverse (stack, data ownership, identity, environments) get lost in chats and pull
+requests, and agents cannot see them.
+
+## Decision
+
+Record each such decision as an ADR in `docs/adr/`, from `docs/templates/adr.md`. A decision that spans several repos
+lives in the root repo; one that touches only one app lives in that app's repo.
+
+## Consequences
+
+- **Positive:** the reasons stay with the code; agents read them before they design.
+- **Negative / cost:** a few minutes per decision.
+
+## Next ADRs (day 1, step 5)
+
+Stack; data ownership; identity; environments.

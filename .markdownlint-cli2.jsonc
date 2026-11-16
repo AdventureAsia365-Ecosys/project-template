@@ -1,0 +1,13 @@
+// Markdown style of the template repo (the generated project has its own copy in template/).
+{
+  "config": {
+    "default": true,
+    "MD013": false,
+    "MD033": false,
+    "MD041": false,
+    "MD024": { "siblings_only": true },
+    "MD025": { "front_matter_title": "" },
+    "MD060": false
+  },
+  "ignores": ["CHANGELOG.md", "template/CHANGELOG.md", "_source/**", "**/node_modules/**"]
+}

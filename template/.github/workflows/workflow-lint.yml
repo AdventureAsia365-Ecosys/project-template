@@ -1,0 +1,39 @@
+name: Workflow lint
+# actionlint (pinned version, binary checked against its sha256) over every workflow, plus the pin rule: every
+# `uses:` of a third-party or GitHub action names a full commit SHA, never a tag or a branch.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  ACTIONLINT_VERSION: 1.7.7
+  ACTIONLINT_SHA256: 023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
+
+jobs:
+  actionlint:
+    name: Workflow lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install actionlint (pinned, sha256 checked)
+        run: |
+          curl -sSfL -o al.tgz "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  al.tgz" | sha256sum -c -
+          tar -xzf al.tgz actionlint && rm al.tgz
+      - name: actionlint
+        run: ./actionlint -color
+      - name: Actions pinned by commit SHA
+        shell: python3 {0}
+        run: |
+          import pathlib, re, sys
+          bad = []
+          for p in sorted(pathlib.Path(".github").rglob("*.y*ml")):
+              for n, line in enumerate(p.read_text().splitlines(), start=1):
+                  m = re.search(r"uses:\s*([^\s#]+)", line)
+                  if m and not m.group(1).startswith(("./", "docker://")) and not re.search(r"@[0-9a-f]{40}$", m.group(1)):
+                      bad.append(f"{p}:{n}: {m.group(1)} is not pinned by a full commit SHA")
+          print("\n".join(bad) or "every action is pinned")
+          sys.exit(1 if bad else 0)

@@ -1,0 +1,132 @@
+name: CI
+# Every PR and every push to {{ default_branch }}: the fast checks (scripts/pre-push.sh runs the same), then the tests of each stack.
+# Actions are pinned by full commit SHA. Cost: standard runners; free on public repos.
+on:
+  pull_request:
+    branches: [{{ default_branch }}]
+  push:
+    branches: [{{ default_branch }}]
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-{% raw %}${{ github.event.pull_request.number || github.ref }}{% endraw %}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Fast checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Docs links
+        run: python3 tools/check_links.py .
+      - name: Resource-ID lint
+        run: python3 tools/resource_id_lint.py --mode error .
+      - name: Code health
+        run: python3 .github/scripts/code_health.py
+      - name: Agent hook tests
+        run: |
+          bash .claude/hooks/test_subagent_guardrails_generic.sh
+          bash .claude/hooks/test_subagent_mcp_guardrails.sh
+          python3 .claude/hooks/test_shell_guard_core.py
+          python3 .claude/hooks/test_settings_hooks.py
+{%- if has_api %}
+
+  api:
+    name: API tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: api
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: api/requirements-dev.txt
+      - run: python -m pip install -r requirements-dev.txt
+      - name: Lint
+        run: |
+          ruff check .
+          ruff format --check .
+      - name: Tests with coverage
+        run: python -m pytest -q --cov=app --cov-report=xml
+      - name: Coverage ratchet
+        run: python3 ../.github/scripts/coverage_ratchet.py check api coverage.xml
+{%- endif %}
+{%- if has_lambda %}
+
+  lambda:
+    name: Lambda tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - run: python3 -m unittest discover -s lambda -p 'test_*.py'
+{%- endif %}
+{%- if has_web %}
+
+  web:
+    name: Web typecheck and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - run: npm install --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+        env:
+          NODE_OPTIONS: --max-old-space-size=2048
+{%- endif %}
+{%- if has_db %}
+
+  migrations:
+    name: Migrations apply on an empty database
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Apply every migration in key order, twice (the second run must be a no-op)
+        env:
+          PGPASSWORD: postgres
+        run: |
+          for pass in 1 2; do
+            for f in $(ls db/migrations/*.sql | sort); do
+              psql -v ON_ERROR_STOP=1 -h localhost -U postgres -d postgres -f "$f" >/dev/null
+            done
+          done
+          psql -h localhost -U postgres -d postgres -tAc "select count(*) from {{ project_slug | replace('-', '_') }}.schema_versions"
+{%- if multi_tenant %}
+      - name: Tenant isolation probe
+        env:
+          PGPASSWORD: postgres
+        run: psql -v ON_ERROR_STOP=1 -h localhost -U postgres -d postgres -f db/tests/isolation_probe.sql
+{%- endif %}
+{%- endif %}

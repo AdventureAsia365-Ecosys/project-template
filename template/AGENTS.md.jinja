@@ -1,0 +1,88 @@
+# AGENTS.md - {{ project_name }}
+
+Instructions for AI coding agents (open AGENTS.md format; `CLAUDE.md` imports this file). Keep it lean: link to the
+docs that hold the detail, load them when the task needs them (progressive disclosure). A rule changes in its doc
+first, then here.
+
+## Hard rules
+
+1. **Read before you design.** [`CONTEXT.md`](CONTEXT.md) (boundaries, owners), the lessons of the area you touch
+   ([`docs/lessons.md`](docs/lessons.md)), and the issue's Done-when. Table and column names come from the schema
+   reference or the migration files, never from memory.
+2. **Trunk-based.** Branch from the latest `origin/{{ default_branch }}`, one PR per deliverable slice, squash merge
+   after every check is green. Lanes work in worktrees under `.tmp-session/wt/`, never in the main checkout.
+3. **Commits and PR titles** are `feat|fix|chore|refactor|docs|ci|test|perf: <description>`; the body carries
+   `Refs {{ issue_key_prefix }}-<n>`. Never a closing keyword (`Fixes`, `Closes`): an issue is Done only when it is
+   verified live ([`.claude/skills/project-ship/SKILL.md`](.claude/skills/project-ship/SKILL.md)).
+4. **Who ships.**
+{%- if team_shape == 'lead-plus-agents' %} The orchestrator agent (the main session) pushes, merges after green CI,
+   deploys and verifies live during the dev phase; risky classes (auth or permissions, migrations, CI or secrets, data
+   deletion) get an independent agent review first. Subagents code and commit locally only (hook-enforced).
+{%- elif team_shape == 'engineers-plus-agents' %} Engineers merge; agents code, test and commit locally, and a risky
+   class (auth or permissions, migrations, CI or secrets, data deletion) needs a human reviewer as well as CI.
+{%- else %} Engineers code, review and merge; every PR has a human reviewer.
+{%- endif %}
+   From the first production release or the first paying customer, the tech lead approves every infrastructure,
+   migration, auth and data-deletion PR before merge (playbook gate G7).
+5. **Thresholds are settings.** Every new threshold, limit, cap, quota, retry limit or retention window is read from
+   the admin-editable settings registry with a seeded default (`docs/templates/settings-entry.md`), never a literal or
+   an environment variable alone.
+6. **Cost before paid.** Quote the monthly cost of any new paid service or paid run and get an explicit yes for that
+   item first; paid batch runs go 3 items, then at most 50, then the rest
+   ([`.claude/skills/project-batch-run/SKILL.md`](.claude/skills/project-batch-run/SKILL.md)).
+7. **No live identifiers in the repo.** No account ID, resource ID, ARN, secret value or personal data in code, docs
+   or tests (`tools/resource_id_lint.py`, gitleaks). Test fixtures use invented names.
+8. **Single-line cloud CLI commands** in docs and scripts (no backslash continuations).
+9. **Tests come with the change**; run the targeted tests and `bash scripts/pre-push.sh` before you hand work back.
+10. **Lessons.** When a mistake's root cause is found, write one principle with a Guard field
+    ([`.claude/skills/project-lessons/SKILL.md`](.claude/skills/project-lessons/SKILL.md)); a lesson a test can check
+    becomes that test.
+
+## Where things are
+
+| Need | Go to |
+|---|---|
+| The lifecycle, gates and roles | [`docs/playbook/README.md`](docs/playbook/README.md) |
+| Running the project with agents (tolerances, lanes, guardrails) | [`docs/playbook/agents.md`](docs/playbook/agents.md) |
+| A template (brief, ADR, runbook, ...) | [`docs/templates/README.md`](docs/templates/README.md) |
+| Decisions | [`docs/adr/README.md`](docs/adr/README.md) |
+| Procedures (session, ship, issue, lessons, UI check, batch run, UAT, business update) | [`.claude/skills/README.md`](.claude/skills/README.md) |
+| The day-1 checklist | [`docs/day-1.md`](docs/day-1.md) |
+
+## Project parameters
+
+The generic skills read their values here; a skill names a parameter, never a value. Fill the `<...>` rows on day 1.
+
+| Parameter | Value |
+|---|---|
+| Project | {{ project_name }} (`{{ project_slug }}`) |
+| Repo layout | {{ repo_layout }} |
+| Repos | `{{ project_slug }}`{% if repo_layout == 'root' %} (root) plus the app repos: <list them as they are created>{% endif %} |
+| Default branch | `{{ default_branch }}` |
+| Tracker | {{ tracker }} |
+| Issue key prefix | `{{ issue_key_prefix }}` |
+| Tracker projects | <one per product area> |
+| Priority scale | Urgent, High, Medium, Low |
+| Plan file | `docs/backlog/README.md` |
+| Session log folder | `docs/sessions/` |
+| Lesson log | `docs/lessons.md` |
+| Merge command | `gh pr merge <n> --squash` after every check is green (or the merge queue once it is on) |
+| Live-check commands | <cloud identity check; deployed version per service from `/health`; job table idle or busy; open PRs> |
+{%- if has_api %}
+| Health URLs | `<api base URL>/health` (returns the commit SHA), `<api base URL>/health/ready` |
+| Deploy gate | `<api base URL>/deploy-gate` (refuses a deploy while jobs run) |
+| Job table | `{{ project_slug | replace('-', '_') }}.job` |
+| Migration keys | `{{ migration_prefix }}-NNN` in `db/migrations/` |
+| Migration apply command | <the CI workflow that applies migrations> |
+{%- endif %}
+| Deploy commands | <one line per service> |
+{%- if has_web %}
+| Web apps and preview hosts | `web/`: <preview host pattern> |
+| Sign-in for automated checks | <test account kind; never a real person's account> |
+| UI kit path | <path of the shared UI components> |
+{%- endif %}
+| Cloud | {{ cloud }}{% if cloud == 'aws' %} (account and region: <fill in; look IDs up at run time, never commit them>){% endif %} |
+| Cost ledger | <where paid usage is recorded{% if ai_features %}: the model-call ledger table{% endif %}> |
+| Business channel and reader language | <tracker project, chat or mail>; {{ primary_language }} |
+| Languages | primary `{{ primary_language }}`{% if secondary_language %}, secondary `{{ secondary_language }}` (pages as `<page>.{{ secondary_language }}.md`){% endif %} |
+| Team shape | {{ team_shape }} |

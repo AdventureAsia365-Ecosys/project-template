@@ -1,0 +1,55 @@
+# Day-1 checklist - {{ project_name }}
+
+The first two sessions of the project (playbook [`adoption.md`](playbook/adoption.md)). This page is the tracked list:
+create one tracker issue per row (or one issue with this list), set the owner and the date, and tick a row only with
+its evidence. The 30 / 60 / 90-day plan is in the same playbook page.
+
+| # | Step | Owner | Evidence | Done |
+|---|---|---|---|---|
+| 1 | Fill the discovery brief and the charter ([`templates/discovery-brief.md`](templates/discovery-brief.md), [`templates/project-charter.md`](templates/project-charter.md)); decide gate G1 | Business owner | `docs/discovery-brief.md`, `docs/project-charter.md`, G1 recorded | [ ] |
+| 2 | Put the generated repo under git and on the remote; turn on branch protection (and the merge queue when several PRs land a day) | Tech lead | Remote URL; protection on `{{ default_branch }}` | [ ] |
+| 3 | Create the tracker project, then fill the plan in [`backlog/README.md`](backlog/README.md) | Orchestrator agent | Tracker project link; first rows in the backlog | [ ] |
+| 4 | Fill [`../CONTEXT.md`](../CONTEXT.md) on the arc42 canvas with the C4 context view | Orchestrator agent, tech lead accepts | Merged PR | [ ] |
+| 5 | Write the first ADRs: stack, data ownership, identity, environments ([`adr/README.md`](adr/README.md)) | Orchestrator agent, tech lead accepts | Four ADRs Accepted | [ ] |
+| 6 | Quote the Dev skeleton's monthly cost and get the business owner's yes{% if has_infra %}; then create the cloud account and the CI role through `infra/`, with tags and a budget alert at that figure{% endif %} | Tech lead | Cost sheet row with the yes{% if has_infra %}; `terraform apply` log{% endif %} | [ ] |
+{%- if has_db %}
+| 7 | Apply migration `{{ migration_prefix }}-001` (schema, roles, schema versions) from CI | Orchestrator agent | The CI run that applied it | [ ] |
+{%- else %}
+| 7 | No database in this repo: mark not applicable | Orchestrator agent | n/a | [ ] |
+{%- endif %}
+{%- if has_api %}
+| 8 | Deploy the skeleton to Dev; `/health` returns the commit SHA | Orchestrator agent | `curl <api>/health` output with the SHA | [ ] |
+{%- else %}
+| 8 | Deploy the skeleton to Dev and check it answers | Orchestrator agent | The check's output | [ ] |
+{%- endif %}
+| 9 | Fill the risk register, the cost sheet and the secrets register (names only) | Orchestrator agent | `docs/risk-register.md`, `docs/cost-sheet.md`, [`security/secrets-register.md`](security/secrets-register.md) | [ ] |
+| 10 | Run the first session close: snapshot, session log, lessons file in use | Orchestrator agent | `docs/sessions/<date>-day-1.md` | [ ] |
+
+## Step 2 in commands
+
+Run from the generated folder. Each command is one line; replace `<org>` and the repo name.
+
+```bash
+git init -b {{ default_branch }} && git add -A && git commit -m "chore: generate from the project template"
+bash scripts/setup.sh
+gh repo create <org>/{{ project_slug }} --private --source . --push
+gh api -X PUT repos/<org>/{{ project_slug }}/branches/{{ default_branch }}/protection --input .github/branch-protection.json
+```
+
+`.github/branch-protection.json` requires the checks every PR runs (CI, PR title, docs lint, secret scan, workflow
+lint) and a linear history. Open an empty PR next (`git switch -c chore/first-pr && git commit --allow-empty -m "chore: first PR" && git push -u origin HEAD && gh pr create --fill`):
+every check must be green on it before feature work starts.
+{%- if has_web %}
+
+After the first `npm install` in `web/`, commit `web/package-lock.json` and switch the CI web job from `npm install`
+to `npm ci`, so every build uses the same dependency tree.
+{%- endif %}
+
+## Checks to run locally
+
+```bash
+bash scripts/pre-push.sh
+```
+
+It runs the docs checks, the resource-ID lint, the hook tests{% if has_api %}, the API tests{% endif %} and the code-health check: the same fast
+checks CI runs.

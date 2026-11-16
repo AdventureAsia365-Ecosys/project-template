@@ -1,0 +1,24 @@
+# {{ project_name }} docs
+
+The catalog of the project's docs. One home per fact: a page links to the page that owns a fact instead of copying it.
+Style rules: [`STYLE.md`](STYLE.md).
+
+| Area | Page |
+|---|---|
+| Lifecycle, gates, roles and the agent operating model | [`playbook/README.md`](playbook/README.md) |
+| Day-1 checklist (tracked) | [`day-1.md`](day-1.md) |
+| Templates | [`templates/README.md`](templates/README.md) |
+| Decisions (ADRs) | [`adr/README.md`](adr/README.md) |
+| Contracts between apps or with outside systems | [`contracts/README.md`](contracts/README.md) |
+| Backlog and plan | [`backlog/README.md`](backlog/README.md) |
+| Session logs | [`sessions/README.md`](sessions/README.md) |
+| Implementation notes | [`implementation-notes/README.md`](implementation-notes/README.md) |
+| Lessons | [`lessons.md`](lessons.md) |
+| Secrets register (names only) | [`security/secrets-register.md`](security/secrets-register.md) |
+| CI cache hygiene | [`ops/ci-cache-hygiene.md`](ops/ci-cache-hygiene.md) |
+{%- if ai_features %}
+| AI use, prompts and evals | [`ai/README.md`](ai/README.md) |
+{%- endif %}
+
+Filled templates live next to the area they describe (for example `docs/risk-register.md`, `docs/runbooks/<task>.md`,
+`docs/reports/<yyyy-mm-dd>-delivery-metrics.md`); add each one to this table when it is created.

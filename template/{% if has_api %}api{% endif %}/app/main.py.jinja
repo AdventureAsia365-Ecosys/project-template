@@ -1,0 +1,92 @@
+"""{{ project_name }} API: health, readiness, the deploy gate and the admin settings endpoints.
+
+/health        200 with the commit SHA the process runs (GIT_SHA, set at image build) - the "verified live" check
+/health/ready  200 when the dependencies answer (the database once it is wired), 503 otherwise
+/deploy-gate   {"open": bool, "busy_jobs": n}: CI refuses a backend deploy or a migration while jobs run
+/admin/settings[/<key>]  list and change the settings registry; administrator role only, every change audited
+
+Identity is wired on day 1 (ADR "identity"): until then `current_role` refuses every admin call.
+"""
+
+from __future__ import annotations
+
+import os
+from collections.abc import Callable
+from datetime import UTC, datetime
+
+from fastapi import Depends, FastAPI, HTTPException, Request
+from pydantic import BaseModel
+
+from .jobs import JobStore, MemoryJobStore
+from .settings_registry import MemorySettingsStore, SettingError, SettingsRegistry
+
+ADMIN_ROLE = "administrator"
+
+
+def no_identity(request: Request) -> str:
+    raise HTTPException(status_code=401, detail="sign-in is not wired yet")
+
+
+class SettingChange(BaseModel):
+    value: int
+
+
+def create_app(
+    jobs: JobStore | None = None,
+    settings: SettingsRegistry | None = None,
+    current_role: Callable[[Request], str] = no_identity,
+    ready_checks: dict[str, Callable[[], bool]] | None = None,
+) -> FastAPI:
+    app = FastAPI(title="{{ project_name }} API")
+    jobs = jobs or MemoryJobStore()
+    settings = settings or SettingsRegistry(MemorySettingsStore())
+    checks = ready_checks or {}
+
+    def require_admin(request: Request) -> str:
+        role = current_role(request)
+        if role != ADMIN_ROLE:
+            raise HTTPException(status_code=403, detail="administrator role required")
+        return role
+
+    @app.get("/health")
+    def health() -> dict:
+        return {"status": "ok", "sha": os.environ.get("GIT_SHA", "unknown")}
+
+    @app.get("/health/ready")
+    def ready() -> dict:
+        failed = [name for name, check in checks.items() if not check()]
+        if failed:
+            raise HTTPException(status_code=503, detail={"failed": failed})
+        return {"status": "ready", "checks": sorted(checks)}
+
+    @app.get("/deploy-gate")
+    def deploy_gate() -> dict:
+        busy = jobs.busy_count(datetime.now(UTC))
+        return {"open": busy == 0, "busy_jobs": busy}
+
+    @app.get("/admin/settings")
+    def list_settings(_: str = Depends(require_admin)) -> list[dict]:
+        return [
+            {
+                "key": s.key,
+                "value": settings.get(s.key),
+                "default": s.default,
+                "minimum": s.minimum,
+                "maximum": s.maximum,
+                "description": s.description,
+            }
+            for s in settings.definitions()
+        ]
+
+    @app.put("/admin/settings/{key}")
+    def change_setting(key: str, change: SettingChange, role: str = Depends(require_admin)) -> dict:
+        try:
+            entry = settings.set(key, change.value, changed_by=role)
+        except SettingError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+        return {"key": entry.key, "old": entry.old, "new": entry.new}
+
+    return app
+
+
+app = create_app()

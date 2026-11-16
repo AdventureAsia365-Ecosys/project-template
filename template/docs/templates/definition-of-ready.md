@@ -1,0 +1,76 @@
+---
+id: TPL-01-dor
+title: Definition of Ready for a Linear issue
+description: The fields an issue needs before it is assigned to Kiro, a subagent or a builder lane.
+type: template
+status: active
+owner: tech-lead
+audience: [pm, engineer, agent]
+applies_to: [ecosystem]
+last_reviewed: 2026-11-14
+review_every_days: 180
+---
+
+# Definition of Ready for a tracker issue
+
+An issue is **ready** when every section below is filled in. Not ready means it is not handed to an agent or a
+builder lane yet. The tracker description keeps the house template of the skill `project-issue` (Problem / Scope /
+Done when / Related); the extra DoR sections go under it.
+
+```markdown
+## Problem
+What is wrong or missing, where, and the evidence (session S<nnn>, PR, numbers). No "might".
+
+## Goal
+One or two sentences: the business outcome.
+
+## Path
+fix | small | feature | risky
+(fix: failing test first, one reviewer lens; small: no new contract or table; feature: Plan section in the
+implementation note, UI check if visible; risky: as feature, plus an independent agent review by risk class.
+The path decides the stages, the review lenses and the artifacts; new-project playbook, Build phase.)
+
+## Appetite
+How much work this is worth, not an estimate: 0.25 | 0.5 | 1 | 2 sessions, and a USD cap for paid runs.
+Over the appetite: stop, re-shape or split; do not keep going (circuit breaker).
+
+## Scope
+1. In: repo, schema, files, endpoints, pages.
+Out of scope: ...
+
+## Done when
+- 3 to 6 testable criteria on the real environment (endpoint X returns field Y; page Z shows ...).
+
+## Verify
+How to prove it live: curl + expected shape, page + screenshot, SQL query, workflow run.
+
+## Risk class
+none | auth | migration | IAM/secret | delete | cost | LLM
+(auth, migration, IAM/secret, delete -> an independent agent review on the PR)
+
+## Dependencies
+Issues, PRs or migrations that must land first (blocks / blocked by in the tracker).
+
+## Docs impact
+CONTEXT.md | ADR | runbook | contract | catalog page (ID) | none
+
+## Cost
+0 USD, or the monthly estimate for any new paid resource or run. Paid model runs: subset size and the ledger stage name.
+
+## Related
+<KEY>-<n> (why)
+```
+
+## Checklist
+
+- [ ] Problem has evidence, not a guess.
+- [ ] Path chosen (fix, small, feature, risky); a `fix` names the failing test that will prove it.
+- [ ] Appetite set in sessions (and USD for paid runs).
+- [ ] Scope names the repo(s) and says what is out.
+- [ ] Done-when items are checkable on Dev, not "code merged".
+- [ ] Verify says exactly which command, page or query proves it.
+- [ ] Risk class set; a risky class names the reviewer.
+- [ ] Dependencies linked in Linear.
+- [ ] Docs impact named (or "none").
+- [ ] Cost stated when the work adds AWS resources or paid calls.
+- [ ] The issue sits in a project under the 100 unarchived-issue limit.

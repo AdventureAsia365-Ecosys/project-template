@@ -1,0 +1,46 @@
+"""Model-call ledger: billed fields come from the response; refused calls are recorded too. No model is called."""
+
+from __future__ import annotations
+
+import pytest
+
+from app.model_ledger import MemoryLedger, billed_fields, record_call
+
+FAKE_RESPONSE = {
+    "text": "A short invented summary.",
+    "usage": {"input_tokens": 120, "output_tokens": 40, "cost_usd": 0.0012},
+}
+
+
+def test_billed_fields_are_written():
+    ledger = MemoryLedger()
+    row = record_call(
+        ledger,
+        stage="summary",
+        role="writer",
+        provider="fake",
+        model="fake-small",
+        outcome="ok",
+        **billed_fields(FAKE_RESPONSE),
+    )
+    assert ledger.rows == [row]
+    assert (row["input_tokens"], row["output_tokens"], row["cost_usd"]) == (120, 40, 0.0012)
+
+
+def test_refused_call_is_recorded_with_zero_usage():
+    ledger = MemoryLedger()
+    record_call(
+        ledger,
+        stage="summary",
+        role="writer",
+        provider="fake",
+        model="fake-small",
+        outcome="refused",
+        **billed_fields({}),
+    )
+    assert ledger.rows[0]["outcome"] == "refused" and ledger.rows[0]["input_tokens"] == 0
+
+
+def test_unknown_outcome_is_refused():
+    with pytest.raises(ValueError):
+        record_call(MemoryLedger(), stage="s", role="r", provider="p", model="m", outcome="maybe")

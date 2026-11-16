@@ -1,0 +1,5 @@
+# Code owners: written now, enforced at gate G7 (first production release or first paying customer), when branch
+# protection turns on "Require review from Code Owners". Replace <team> with a GitHub team or user.
+# /.github/        @<team>
+# /infra/          @<team>
+# /db/migrations/  @<team>
