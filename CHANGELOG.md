@@ -3,6 +3,13 @@
 All notable changes of the template. Written by release-please from the Conventional Commit titles merged to `main`
 ([`VERSIONING.md`](VERSIONING.md)).
 
+## [1.1.0](https://github.com/AdventureAsia365-Ecosys/project-template/compare/v1.0.0...v1.1.0) (2026-11-16)
+
+
+### Features
+
+* project template with the day-1 questionnaire, kit copies, guardrails and skeletons ([de194b4](https://github.com/AdventureAsia365-Ecosys/project-template/commit/de194b4e41823ecd0ae23561fb9ff9ba44c76383))
+
 ## 1.0.0 (2026-11-16)
 
 ### Features
