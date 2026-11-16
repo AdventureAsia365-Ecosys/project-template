@@ -118,7 +118,7 @@ jobs:
           PGPASSWORD: postgres
         run: |
           for _ in 1 2; do
-            for f in $(ls db/migrations/*.sql | sort); do
+            for f in db/migrations/*.sql; do  # the glob expands in sorted (key) order
               psql -v ON_ERROR_STOP=1 -h localhost -U postgres -d postgres -f "$f" >/dev/null
             done
           done
