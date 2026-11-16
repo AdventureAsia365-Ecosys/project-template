@@ -32,7 +32,7 @@ jobs:
           bad = []
           for p in sorted(pathlib.Path(".github").rglob("*.y*ml")):
               for n, line in enumerate(p.read_text().splitlines(), start=1):
-                  m = re.search(r"uses:\s*([^\s#]+)", line)
+                  m = re.match(r"\s*(?:-\s+)?uses:\s*([^\s#]+)", line)  # a YAML uses: key only, not text that names it
                   if m and not m.group(1).startswith(("./", "docker://")) and not re.search(r"@[0-9a-f]{40}$", m.group(1)):
                       bad.append(f"{p}:{n}: {m.group(1)} is not pinned by a full commit SHA")
           print("\n".join(bad) or "every action is pinned")

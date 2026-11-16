@@ -117,7 +117,7 @@ jobs:
         env:
           PGPASSWORD: postgres
         run: |
-          for pass in 1 2; do
+          for _ in 1 2; do
             for f in $(ls db/migrations/*.sql | sort); do
               psql -v ON_ERROR_STOP=1 -h localhost -U postgres -d postgres -f "$f" >/dev/null
             done
