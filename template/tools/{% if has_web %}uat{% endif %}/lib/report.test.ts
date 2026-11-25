@@ -31,14 +31,18 @@ test("names of takes and screenshots", () => {
   assert.equal(takeId("01-kit-gallery", new Date(Date.UTC(2031, 0, 2, 3, 4, 5))), "20310102-030405-01-kit-gallery");
   assert.equal(screenshotName(3, "Open the drawer: Sample item!"), "03-open-the-drawer-sample-item.png");
   assert.equal(screenshotName(12, "???"), "12-step.png");
+  assert.equal(screenshotName(4, "Open the drawer: the sample item's panel slides in"), "04-open-the-drawer-the-sample-item-s-panel.png");
 });
 
 test("captions are timed per step and skip the steps that did not run", () => {
-  const vtt = captionsVtt([step(1, "pass", 0, 250), step(2, "fail", 3725500, 3727000), step(3, "skipped", 0, 0)]);
+  const vtt = captionsVtt([step(1, "pass", 0, 250), step(2, "fail", 3725500, 3725900), step(3, "skipped", 0, 0)]);
   assert.equal(
     vtt,
-    "WEBVTT\n\n1\n00:00:00.000 --> 00:00:01.000\nStep 1 of the walk\n\n2\n01:02:05.500 --> 01:02:07.000\nStep 2 of the walk\n",
+    "WEBVTT\n\n1\n00:00:00.000 --> 01:02:05.500\nStep 1 of the walk\n\n2\n01:02:05.500 --> 01:02:06.500\nStep 2 of the walk\n",
   );
+  const quick = captionsVtt([step(1, "pass", 0, 120), step(2, "pass", 120, 2400)]);
+  assert.ok(quick.includes("00:00:00.000 --> 00:00:00.120"), "a cue ends where the next step starts");
+  assert.ok(quick.includes("00:00:00.120 --> 00:00:02.400"));
 });
 
 test("the index escapes text, lists newest first and marks failures", () => {

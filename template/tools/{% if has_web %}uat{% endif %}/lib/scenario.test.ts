@@ -32,6 +32,10 @@ test("a valid scenario parses into typed steps", () => {
   const s = parseScenario(base());
   assert.equal(s.stepTimeoutMs, 5000);
   assert.equal(s.allowConsoleErrors, false);
+  assert.equal(s.stepHoldMs, 0);
+  assert.equal(s.colorScheme, "light");
+  assert.equal(parseScenario({ ...base(), color_scheme: "dark" }).colorScheme, "dark");
+  assert.equal(parseScenario({ ...base(), step_hold_ms: 1500 }).stepHoldMs, 1500);
   assert.deepEqual(s.steps[0].action, { kind: "goto", path: "/orders" });
   assert.deepEqual(s.steps[1].action, { kind: "fill", target: { label: "Name" }, value: "Blue kettle" });
   assert.deepEqual(s.steps[1].expect.map((e) => e.kind), ["contains", "count", "url_contains"]);
@@ -48,6 +52,8 @@ test("bad rows fail with their path", () => {
     [(s) => ((s.steps[1] as Record<string, unknown>).action = { fill: { label: "Name" } }), /action\.value/],
     [(s) => ((s.steps[1] as Record<string, unknown>).action = { hover: { label: "Name" } }), /exactly one of goto/],
     [(s) => (s.step_timeout_ms = 10), /step_timeout_ms/],
+    [(s) => ((s as Record<string, unknown>).step_hold_ms = -5), /step_hold_ms/],
+    [(s) => ((s as Record<string, unknown>).color_scheme = "sepia"), /color_scheme/],
     [(s) => ((s as Record<string, unknown>).speed = 2), /unknown key\(s\) speed/],
     [(s) => (s.steps = []), /steps: needs a non-empty list/],
   ];

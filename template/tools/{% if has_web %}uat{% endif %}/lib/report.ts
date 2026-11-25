@@ -41,7 +41,7 @@ export function takeId(scenario: string, at: Date): string {
 
 /** File name of a step's screenshot: 03-open-the-drawer.png. */
 export function screenshotName(n: number, caption: string): string {
-  const slug = caption.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
+  const slug = caption.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40).replace(/^-+|-+$/g, "");
   return `${String(n).padStart(2, "0")}-${slug || "step"}.png`;
 }
 
@@ -54,14 +54,14 @@ function vttTime(ms: number): string {
   return `${pad(h)}:${pad(m)}:${pad(s)}.${pad(t % 1000, 3)}`;
 }
 
-/** WebVTT captions, one cue per step that ran; a cue lasts at least a second so it can be read. */
+/** WebVTT captions, one cue per step that ran. A cue stays until the next step starts (cues never overlap); the
+ * last one lasts at least a second so it can be read. */
 export function captionsVtt(steps: StepResult[]): string {
-  const cues = steps
-    .filter((s) => s.verdict !== "skipped")
-    .map((s) => {
-      const end = Math.max(s.endMs, s.startMs + 1000);
-      return `${s.n}\n${vttTime(s.startMs)} --> ${vttTime(end)}\n${s.caption.replace(/\n+/g, " ")}`;
-    });
+  const ran = steps.filter((s) => s.verdict !== "skipped");
+  const cues = ran.map((s, i) => {
+    const end = i + 1 < ran.length ? ran[i + 1].startMs : Math.max(s.endMs, s.startMs + 1000);
+    return `${s.n}\n${vttTime(s.startMs)} --> ${vttTime(end)}\n${s.caption.replace(/\n+/g, " ")}`;
+  });
   return ["WEBVTT", ...cues].join("\n\n") + "\n";
 }
 

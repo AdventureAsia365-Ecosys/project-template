@@ -3,6 +3,7 @@
   "title": "Browse the UI kit gallery",
   "viewport": { "width": 1280, "height": 800 },
   "step_timeout_ms": 10000,
+  "step_hold_ms": 1200,
   "steps": [
     {
       "caption": "Open the UI kit gallery: the page title and the sample table are shown",

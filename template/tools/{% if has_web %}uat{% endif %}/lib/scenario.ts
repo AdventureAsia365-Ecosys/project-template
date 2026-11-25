@@ -6,6 +6,8 @@
 //   "viewport": { "width": 1280, "height": 800 },
 //   "step_timeout_ms": 10000,                 // the ceiling of every wait in a step (each wait has its own)
 //   "allow_console_errors": false,            // optional; a page or console error fails the step by default
+//   "step_hold_ms": 1500,                     // optional (default 0): time each step stays on screen in a recording
+//   "color_scheme": "dark",                   // optional (default light): the theme the browser asks for
 //   "steps": [
 //     { "caption": "What the user does and should see",
 //       "action": { "goto": "/path" },        // optional; one of goto, click, fill, press, select, check
@@ -48,6 +50,8 @@ export type Scenario = {
   viewport: { width: number; height: number };
   stepTimeoutMs: number;
   allowConsoleErrors: boolean;
+  stepHoldMs: number;
+  colorScheme: "light" | "dark";
   steps: Step[];
 };
 
@@ -174,7 +178,7 @@ function parseStep(v: unknown, where: string): Step {
 
 export function parseScenario(raw: unknown): Scenario {
   if (!isObj(raw)) fail("scenario", "the file holds one JSON object");
-  onlyKeys(raw, ["title", "viewport", "step_timeout_ms", "allow_console_errors", "steps"], "scenario");
+  onlyKeys(raw, ["title", "viewport", "step_timeout_ms", "allow_console_errors", "step_hold_ms", "color_scheme", "steps"], "scenario");
   const title = text(raw.title, "title");
   if (!isObj(raw.viewport)) fail("viewport", "needs { width, height }");
   onlyKeys(raw.viewport, ["width", "height"], "viewport");
@@ -186,10 +190,13 @@ export function parseScenario(raw: unknown): Scenario {
   if (raw.allow_console_errors !== undefined && typeof raw.allow_console_errors !== "boolean") {
     fail("allow_console_errors", "needs true or false");
   }
+  const stepHoldMs = raw.step_hold_ms === undefined ? 0 : whole(raw.step_hold_ms, 0, 30000, "step_hold_ms");
+  const colorScheme = raw.color_scheme === undefined ? "light" : raw.color_scheme;
+  if (colorScheme !== "light" && colorScheme !== "dark") fail("color_scheme", 'needs "light" or "dark"');
   if (!Array.isArray(raw.steps) || raw.steps.length === 0) fail("steps", "needs a non-empty list");
   const steps = raw.steps.map((s, i) => parseStep(s, `steps[${i}]`));
   if (steps[0].action?.kind !== "goto") fail("steps[0].action", "the first step opens a page (goto)");
-  return { title, viewport, stepTimeoutMs, allowConsoleErrors: raw.allow_console_errors === true, steps };
+  return { title, viewport, stepTimeoutMs, allowConsoleErrors: raw.allow_console_errors === true, stepHoldMs, colorScheme, steps };
 }
 
 /** "role button named Save", for step logs and failure messages. */

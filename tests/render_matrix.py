@@ -289,6 +289,8 @@ def web_e2e(project: Path, port: int = 3917) -> list[tuple[str, bool, str]]:
         ("uat typecheck", ["npm", "run", "--silent", "typecheck"], uat),
     ]:
         ok, msg = run(cmd, cwd, env)
+        if not ok and label == "web build" and "Retry the same command" in msg:
+            ok, msg = run(cmd, cwd, env)  # next build may stop once per project to print a notice; the retry builds
         results.append((label, ok, msg))
         if not ok:
             return results

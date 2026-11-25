@@ -112,6 +112,7 @@ async function playTake(
   const context = await browser.newContext({
     baseURL: opts.baseUrl,
     viewport: scenario.viewport,
+    colorScheme: scenario.colorScheme,
     recordVideo: opts.video ? { dir, size: scenario.viewport } : undefined,
   });
   const page = await context.newPage();
@@ -139,8 +140,9 @@ async function playTake(
     } catch (err) {
       error = err instanceof Error ? err.message.split("\n")[0] : String(err);
     }
+    if (!error && scenario.stepHoldMs > 0) await page.waitForTimeout(scenario.stepHoldMs); // on screen for the video
     const shot = screenshotName(n, step.caption);
-    await page.screenshot({ path: path.join(dir, shot), fullPage: true }).catch(() => undefined);
+    await page.screenshot({ path: path.join(dir, shot) }).catch(() => undefined);
     failed = error !== undefined;
     steps.push({ n, caption: step.caption, verdict: failed ? "fail" : "pass", startMs, endMs: Date.now() - t0, error, screenshot: shot });
     console.log(`${failed ? "FAIL" : "ok  "} ${name} step ${n}: ${step.caption}${error ? ` -- ${error}` : ""}`);

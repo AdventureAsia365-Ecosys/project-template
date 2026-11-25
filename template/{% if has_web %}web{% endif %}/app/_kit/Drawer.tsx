@@ -46,7 +46,7 @@ export function Drawer({
       <aside className="kit-drawer" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} ref={panel}>
         <header>
           <h2 id={titleId}>{title}</h2>
-          <Button variant="ghost" size="sm" onClick={onClose} aria-label="Close">
+          <Button variant="ghost" size="sm" onClick={onClose}>
             Close
           </Button>
         </header>

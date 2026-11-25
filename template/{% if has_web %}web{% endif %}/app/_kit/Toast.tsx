@@ -26,7 +26,7 @@ function ToastView({ item, durationMs, onDismiss }: { item: ToastItem; durationM
   return (
     <div className={`kit-toast kit-toast--${item.tone}`}>
       <span>{item.message}</span>
-      <Button variant="ghost" size="sm" onClick={() => onDismiss(item.id)} aria-label="Dismiss">
+      <Button variant="ghost" size="sm" onClick={() => onDismiss(item.id)}>
         Dismiss
       </Button>
     </div>

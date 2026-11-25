@@ -44,8 +44,11 @@ user does and should see, in the reader's language), an optional action and at l
 
 Prefer role and name targets: they survive layout changes. `step_timeout_ms` is the ceiling of every wait in a step,
 so a missing element fails the step instead of hanging. A page or console error fails the step unless the scenario sets
-`allow_console_errors`. Pick rows by a condition the walk needs (an open slot, a draft item), not the first row of a
-list that old test data may hold. Use invented data only, never a real customer's.
+`allow_console_errors`. `step_hold_ms` (optional) keeps each passed step on screen a little longer, so a recording
+can be followed; the captions run from one step's start to the next; `color_scheme` (`light` or `dark`) picks the
+theme the browser asks for. A screenshot shows the viewport, as the video does. Pick rows by a condition the walk needs (an
+open slot, a draft item), not the first row of a list that old test data may hold. Use invented data only, never a
+real customer's.
 
 ## Recording rules
 
