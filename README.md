@@ -13,7 +13,7 @@ Each page says what it keeps or drops.
 
 ```bash
 pipx install copier==9.19.1
-copier copy --vcs-ref v1.3.0 gh:<org>/project-template my-project
+copier copy --vcs-ref v1.3.1 gh:<org>/project-template my-project
 cd my-project && less docs/day-1.md
 ```
 

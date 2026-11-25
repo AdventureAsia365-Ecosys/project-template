@@ -1,6 +1,7 @@
 """The Playwright pins of the template agree: the UAT harness, the UI smoke and the kit CI's web end-to-end job install
 one version, so the browser build CI downloads is the one every run uses. Also: the UI kit and the UAT harness keep the
-TypeScript and Node type pins of the web skeleton.
+TypeScript and Node type pins of the web skeleton, and Next.js stays on an exact version at or above the release that
+fixed the advisories published against 16.4.2 (1.3.1).
 
 Run: python3 -m unittest discover -s tests -p 'test_*.py'
 """
@@ -16,6 +17,8 @@ REPO = Path(__file__).resolve().parents[1]
 WEB_PACKAGE = REPO / "template" / "{% if has_web %}web{% endif %}" / "package.json.jinja"
 UAT_PACKAGE = REPO / "template" / "tools" / "{% if has_web %}uat{% endif %}" / "package.json"
 KIT_CI = REPO / ".github" / "workflows" / "kit-ci.yml"
+# The first Next.js release with no published advisory against it in the 16.4 line (1.3.1 moved the pin here).
+NEXT_FLOOR = (16, 4, 5)
 
 
 def pin(text: str, name: str) -> str:
@@ -41,6 +44,11 @@ class PinsTest(unittest.TestCase):
             self.assertEqual(uat[name], pin(web, name), name)
         for name, version in uat.items():
             self.assertRegex(version, r"^\d+\.\d+\.\d+$", f"{name} is an exact version")
+
+    def test_next_is_exact_and_patched(self):
+        version = pin(WEB_PACKAGE.read_text(encoding="utf-8"), "next")
+        self.assertRegex(version, r"^\d+\.\d+\.\d+$", "next is an exact version")
+        self.assertGreaterEqual(tuple(int(part) for part in version.split(".")), NEXT_FLOOR, version)
 
 
 if __name__ == "__main__":
