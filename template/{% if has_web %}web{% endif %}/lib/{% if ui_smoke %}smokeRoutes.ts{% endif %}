@@ -1,0 +1,37 @@
+// The route list of the UI smoke (e2e/smoke-routes.json), checked before Playwright opens anything: a bad row fails
+// with its index instead of a confusing browser error.
+
+export type SmokeRoute = { path: string; selector?: string };
+export type SmokePlan = { timeoutMs: number; routes: SmokeRoute[] };
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function parseRoute(row: unknown, i: number): SmokeRoute {
+  if (!isRecord(row) || typeof row.path !== "string") throw new Error(`routes[${i}]: needs a "path" string`);
+  if (!row.path.startsWith("/") || row.path.startsWith("//")) {
+    throw new Error(`routes[${i}]: path must start with a single "/" (same host only): ${row.path}`);
+  }
+  if (row.selector !== undefined && (typeof row.selector !== "string" || !row.selector.trim())) {
+    throw new Error(`routes[${i}]: selector must be a non-empty string`);
+  }
+  return row.selector === undefined ? { path: row.path } : { path: row.path, selector: row.selector };
+}
+
+export function parseSmokePlan(raw: unknown): SmokePlan {
+  if (!isRecord(raw) || !Array.isArray(raw.routes) || raw.routes.length === 0) {
+    throw new Error('smoke routes: needs a non-empty "routes" list');
+  }
+  const timeoutMs = raw.timeout_ms;
+  if (typeof timeoutMs !== "number" || !Number.isInteger(timeoutMs) || timeoutMs < 1000) {
+    throw new Error("smoke routes: timeout_ms must be a whole number of milliseconds, at least 1000");
+  }
+  const routes = raw.routes.map(parseRoute);
+  const seen = new Set<string>();
+  for (const r of routes) {
+    if (seen.has(r.path)) throw new Error(`smoke routes: ${r.path} is listed twice`);
+    seen.add(r.path);
+  }
+  return { timeoutMs, routes };
+}

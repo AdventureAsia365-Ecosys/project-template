@@ -1,0 +1,43 @@
+#!/usr/bin/env python3
+"""Print the OpenAPI document of the API in <api dir> (a FastAPI app), sorted, for the API contract check.
+
+Usage: python3 .github/scripts/openapi_export.py <api dir> [--app app.main:app] [--out FILE]
+Run it with a Python that has the API's requirements installed. The app is imported from <api dir>, so the same
+script exports the base branch's API (a second checkout) and the PR's. Exit 0 and an empty output when <api dir> has
+no app module (no API on that branch yet); exit 1 when the import or the export fails.
+"""
+
+from __future__ import annotations
+
+import argparse
+import importlib
+import json
+import sys
+from pathlib import Path
+
+
+def export(api_dir: Path, target: str) -> str:
+    module_name, _, attr = target.partition(":")
+    if not (api_dir / Path(*module_name.split("."))).with_suffix(".py").is_file():
+        return ""
+    sys.path.insert(0, str(api_dir.resolve()))
+    app = getattr(importlib.import_module(module_name), attr or "app")
+    return json.dumps(app.openapi(), indent=2, sort_keys=True) + "\n"
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("api_dir", type=Path)
+    ap.add_argument("--app", default="app.main:app", help="module:attribute of the FastAPI app")
+    ap.add_argument("--out", type=Path, help="write here instead of stdout")
+    a = ap.parse_args(argv)
+    doc = export(a.api_dir, a.app)
+    if a.out:
+        a.out.write_text(doc, encoding="utf-8")
+    else:
+        sys.stdout.write(doc)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

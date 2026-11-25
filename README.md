@@ -13,7 +13,7 @@ Each page says what it keeps or drops.
 
 ```bash
 pipx install copier==9.19.1
-copier copy --vcs-ref v1.0.0 gh:<org>/project-template my-project
+copier copy --vcs-ref v1.1.0 gh:<org>/project-template my-project
 cd my-project && less docs/day-1.md
 ```
 
@@ -32,6 +32,10 @@ Copier asks the day-1 questionnaire:
 | Migration key prefix | text | the issue key prefix in lowercase |
 | Languages | primary, secondary (translations as `<page>.<code>.md`) | English, none |
 | Team shape | tech lead plus agents; several engineers plus agents; engineers only | tech lead plus agents |
+| Stop hook | yes / no (an agent may not end its turn while the open-work file lists unblocked items) | yes, unless engineers only |
+| Personal-data guard | yes / no (refuses shell commands whose SQL would print personal columns or whole rows) | yes |
+| API contract check | yes / no, Python API only (OpenAPI diff against the base branch; breaking fails unless labelled) | yes |
+| UI smoke | yes / no, Next.js web only (Playwright over a route list on a deployed URL) | yes |
 | Default branch, license | text; none / MIT / Apache 2.0 | main, none |
 
 The answers and the template version are recorded in `.copier-answers.yml`; `copier update` pulls later template
@@ -46,19 +50,16 @@ releases into the project as a normal PR ([`VERSIONING.md`](VERSIONING.md)).
 | `docs/playbook/` | The lifecycle: phases, gates, roles, tolerances, the agent operating model, adoption, metrics |
 | `docs/templates/` | Discovery brief, charter, RAID, cost sheet, ADR, threat model, runbook, postmortem, delivery metrics report and more |
 | `docs/day-1.md` | The day-1 checklist as a tracked list |
-| `.claude/` | Guardrail hooks (subagents never push, merge, apply or delete; MCP writes blocked for subagents; shell-mistake refusals) with their red-team tests, and the generic skills |
-| `.github/` | CI, PR title, docs lint, secret scan (gitleaks, pinned and checksum-verified), workflow lint, release-please, post-deploy verify; code-health and coverage ratchets |
+| `.claude/` | Guardrail hooks (subagents never push, merge, apply or delete; MCP writes blocked for subagents; shell-mistake refusals; optional stop hook and personal-data guard) with their red-team tests, and the generic skills |
+| `.github/` | CI, PR title, docs lint, secret scan (gitleaks, pinned and checksum-verified), workflow lint, release-please, post-deploy verify, optional API contract check and UI smoke; code-health and coverage ratchets |
 | `api/`, `db/`, `web/`, `lambda/`, `infra/` | Skeletons for the chosen stacks. The API's job and settings stores are in-memory; the SQL tables and the claim query are there, the database-backed stores are not |
 | `tools/uat/` | A note on the UAT harness (how scenarios are laid out and recorded); no runnable harness yet |
 
-### Not in 1.0.0
+### Not in 1.1.0
 
 The kit design names these parts; this release does not ship them yet. Each one is planned for a later minor
 release (a new optional file or check, [`VERSIONING.md`](VERSIONING.md)) and listed in [`CHANGELOG.md`](CHANGELOG.md).
 
-- Guardrail hooks: the stop hook that keeps an agent working while unblocked work remains, and the personal-data
-  guard.
-- Workflows: API contract check and UI smoke test.
 - Web: a UI kit (shared components) in the web skeleton; `AGENTS.md` only names its path as a project parameter.
 - API: database-backed job and settings stores (the skeleton ships in-memory stores, the SQL tables and the claim
   query).

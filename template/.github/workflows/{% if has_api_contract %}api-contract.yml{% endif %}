@@ -1,0 +1,72 @@
+name: API contract
+# Each PR: export the API's OpenAPI document on the base branch and on the PR (.github/scripts/openapi_export.py),
+# then compare the two with oasdiff (pinned, sha256 checked) through .github/scripts/openapi_breaking.sh.
+#   - a breaking change on a public path fails the job;
+#   - paths matching INTERNAL_PATHS (called only by this repo's own clients) are listed as warnings;
+#   - escape hatch: the PR label "api-breaking" or a breaking title ("feat!: ..."), with the client plan in the PR
+#     body. Labelling re-runs this job by itself (the event types below), no push needed.
+# In a merge queue the job is skipped (a skipped required check passes): the PR run already decided.
+# Free: one short job per PR event, no secrets beyond the default read-only token.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: api-contract-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  OASDIFF_VERSION: 1.33.0
+  OASDIFF_SHA256: 43a4e328e2d13ba1552d760aa68d2485c75c5621f309f6ff64ae895188345247
+
+jobs:
+  breaking:
+    name: OpenAPI breaking changes
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ALLOW_BREAKING: >-
+        ${{ contains(github.event.pull_request.labels.*.name, 'api-breaking')
+        || contains(github.event.pull_request.title, '!:') }}
+    steps:
+      # The pull_request ref is the merge commit; its first parent is the base tip.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: api/requirements.txt
+      - name: Install the API requirements and oasdiff (pinned, sha256 checked)
+        run: |
+          python -m pip install -r api/requirements.txt
+          curl -sSfL -o od.tgz "https://github.com/oasdiff/oasdiff/releases/download/v${OASDIFF_VERSION}/oasdiff_${OASDIFF_VERSION}_linux_amd64.tar.gz"
+          echo "${OASDIFF_SHA256}  od.tgz" | sha256sum -c -
+          tar -xzf od.tgz -C "$RUNNER_TEMP" oasdiff && rm od.tgz
+      - name: Export the base and the PR documents
+        run: |
+          python3 .github/scripts/openapi_export.py api --out "$RUNNER_TEMP/head-openapi.json"
+          git worktree add --detach "$RUNNER_TEMP/base" HEAD^1
+          if ! python3 .github/scripts/openapi_export.py "$RUNNER_TEMP/base/api" --out "$RUNNER_TEMP/base-openapi.json"; then
+            if [ "$ALLOW_BREAKING" = "true" ]; then
+              echo "::warning::The base branch's API does not export with the PR's requirements; accepted by the breaking label."
+              : > "$RUNNER_TEMP/base-openapi.json"
+            else
+              echo "::error::The base branch's API does not export with the PR's requirements. Label the PR api-breaking if the change is meant."
+              exit 1
+            fi
+          fi
+      - name: Breaking changes on public paths
+        env:
+          OASDIFF: ${{ runner.temp }}/oasdiff
+          BASE_SPEC: ${{ runner.temp }}/base-openapi.json
+          HEAD_SPEC: ${{ runner.temp }}/head-openapi.json
+          INTERNAL_PATHS: "^/admin/"
+          SEVERITY_LEVELS: .github/oasdiff/severity-levels.txt
+        run: bash .github/scripts/openapi_breaking.sh

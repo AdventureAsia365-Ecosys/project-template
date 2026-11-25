@@ -1,0 +1,217 @@
+#!/usr/bin/env python3
+"""Stop hook: the main session may not end its turn while the open-work file lists unblocked items.
+
+Agents tend to stop early: they end a turn with a summary, or ask "Shall I continue?", while items they could do
+themselves are still open on the session's live checklist (the open-work file, `.tmp-session/S<nnn>-checklist.md` by
+default; project-session skill). When the main session is about to stop, this hook reads that file and refuses the
+stop once (exit 2, the reason goes back to the agent) when ALL of these hold:
+
+- the newest open-work file was changed within `max_age_hours` (an old checklist belongs to an old session);
+- it has `- [ ]` items whose text matches none of the blocked markers (an item that waits on someone, a date, an
+  approval or another step does not count: mark it `[blocked: <who or what>]`);
+- the last assistant message does not hand the user a real choice: a question in its last paragraph that is not an
+  offer to go on or to stop ("Shall I continue?", "Do you want me to keep going?"), or an approval, cost or decision
+  word in its last paragraphs (`approval_patterns`), lets the stop through.
+
+`stop_hook_active` (set by Claude Code when the turn already continues because of a Stop hook) lets the next stop
+through, so the hook nudges once per turn and never loops. Subagents stop through SubagentStop, which this hook does
+not handle.
+
+Settings: `.claude/hooks/stop-open-work.json` (the files, the age, the markers, the offer and approval patterns; a
+pattern is a Python regex, matched without case). A missing or broken settings file falls back to the defaults below.
+
+Failure: unreadable input, a missing open-work file or an error inside the hook lets the stop through (exit 0): the
+hook saves time, it must never trap a session.
+
+Test: python3 .claude/hooks/test_stop_open_work.py
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(os.environ.get("CLAUDE_PROJECT_DIR") or Path(__file__).resolve().parents[2])
+SETTINGS = Path(__file__).resolve().parent / "stop-open-work.json"
+
+DEFAULTS: dict = {
+    "open_work_files": [".tmp-session/S*-checklist.md"],
+    "max_age_hours": 24,
+    "max_listed": 8,
+    "blocked_markers": [
+        r"\[blocked",
+        r"\bblocked\b",
+        r"\bwait(?:s|ing)?\b",
+        r"\bafter\b",
+        r"\bonce\b",
+        r"\buntil\b",
+        r"\bneeds? (?:approval|a yes|sign-off)\b",
+        r"\btech lead\b",
+        r"\bbusiness owner\b",
+        r"\bMFA\b",
+    ],
+    "offer_patterns": [
+        r"\b(?:shall|should|can|may) (?:i|we)\b.{0,60}\b(?:continue|go on|keep going|proceed|stop|close|wrap(?: up)?|end)\b",
+        r"\b(?:do you want|want me to|would you like)\b.{0,60}\b(?:continue|go on|keep going|proceed|stop|close|wrap(?: up)?|end)\b",
+        r"\b(?:continue|keep going|go on|proceed)\b.{0,30}\?$",
+    ],
+    "approval_patterns": [
+        r"\bapprov",
+        r"\bdecid",
+        r"\bdecision",
+        r"\bconfirm",
+        r"\bpaid\b",
+        r"\bcosts?\b",
+        r"\$\s*\d",
+        r"\bdelete\b",
+        r"\bdestroy\b",
+        r"\bdry.?run\b",
+        r"\bMFA\b",
+        r"\b(?:option|choice) [a-d1-4]\b",
+        r"\([a-d]\)",
+    ],
+    "context_paragraphs": 3,
+}
+
+OPEN_ITEM = re.compile(r"^\s*[-*] \[ \]\s+(.*)$")
+SENTENCE_END = re.compile(r"(?<=[.?!])\s+|\n+")
+
+
+def load_settings(path: Path = SETTINGS) -> dict:
+    """The defaults overlaid with the project's settings file (unknown keys ignored, wrong types fall back)."""
+    out = dict(DEFAULTS)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return out
+    if not isinstance(data, dict):
+        return out
+    for key, default in DEFAULTS.items():
+        value = data.get(key)
+        if value is not None and isinstance(value, type(default)):
+            out[key] = value
+    return out
+
+
+def compile_all(patterns: list[str]) -> list[re.Pattern[str]]:
+    return [re.compile(p, re.IGNORECASE) for p in patterns if isinstance(p, str)]
+
+
+def last_assistant_text(transcript: Path) -> str:
+    """Text of the last assistant message of a Claude Code transcript (.jsonl)."""
+    try:
+        lines = transcript.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    for line in reversed(lines[-400:]):
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(entry, dict) or entry.get("type") != "assistant":
+            continue
+        content = (entry.get("message") or {}).get("content")
+        if isinstance(content, str):
+            return content
+        texts = [c.get("text", "") for c in content or [] if isinstance(c, dict) and c.get("type") == "text"]
+        if texts:
+            return "\n".join(texts)
+    return ""
+
+
+def hands_user_a_choice(text: str, cfg: dict) -> bool:
+    """True when the message asks a real question or carries approval context: the stop must go through."""
+    plain = re.sub(r"[*_`]", "", text).strip()
+    paras = [p.strip() for p in re.split(r"\n\s*\n", plain) if p.strip()]
+    if not paras:
+        return False
+    context = "\n".join(paras[-int(cfg["context_paragraphs"]) :])
+    if any(p.search(context) for p in compile_all(cfg["approval_patterns"])):
+        return True
+    offers = compile_all(cfg["offer_patterns"])
+    sentences = [s.strip() for s in SENTENCE_END.split(paras[-1]) if s and s.strip()]
+    questions = [s for s in sentences if s.endswith("?")]
+    return any(not any(o.search(q) for o in offers) for q in questions)
+
+
+def newest_open_work_file(root: Path, cfg: dict, now: float | None = None) -> Path | None:
+    now = now or time.time()
+    found: list[Path] = []
+    for pattern in cfg["open_work_files"]:
+        try:
+            found += [p for p in root.glob(pattern) if p.is_file()]
+        except (OSError, ValueError):
+            continue
+    if not found:
+        return None
+    newest = max(found, key=lambda p: p.stat().st_mtime)
+    if now - newest.stat().st_mtime > float(cfg["max_age_hours"]) * 3600:
+        return None
+    return newest
+
+
+def open_items(path: Path, cfg: dict) -> list[str]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    blocked = compile_all(cfg["blocked_markers"])
+    items = []
+    for line in text.splitlines():
+        m = OPEN_ITEM.match(line)
+        if m and not any(b.search(m.group(1)) for b in blocked):
+            items.append(m.group(1).strip())
+    return items
+
+
+def check(data: dict, root: Path = ROOT, cfg: dict | None = None, now: float | None = None) -> str | None:
+    """The reason to refuse the stop, or None to let the session stop."""
+    cfg = cfg or load_settings()
+    if data.get("stop_hook_active"):
+        return None
+    text = data.get("last_assistant_message") or ""
+    if not text and data.get("transcript_path"):
+        text = last_assistant_text(Path(data["transcript_path"]))
+    if text.strip() and hands_user_a_choice(text, cfg):
+        return None
+    path = newest_open_work_file(root, cfg, now)
+    if path is None:
+        return None
+    items = open_items(path, cfg)
+    if not items:
+        return None
+    limit = int(cfg["max_listed"])
+    listed = "\n".join(f"  - {i[:140]}" for i in items[:limit])
+    more = f"\n  (+{len(items) - limit} more)" if len(items) > limit else ""
+    return (
+        f"Not yet: {path.name} still lists {len(items)} open item(s) with no blocked marker:\n{listed}{more}\n"
+        "Do the ones you can do now. Never start a paid run, a delete, a merge the rules hold back, or anything else "
+        "that needs a person's yes because of this message. For an item that really waits on someone, a date or a "
+        "decision, mark it in the file ([blocked: <who or what>]) and say so in one line. Then end the turn."
+    )
+
+
+def main() -> int:
+    try:
+        data = json.loads(sys.stdin.read())
+    except json.JSONDecodeError:
+        return 0
+    if not isinstance(data, dict):
+        return 0
+    try:
+        reason = check(data)
+    except Exception as e:  # noqa: BLE001 - a hook bug must never trap the session
+        print(f"stop_open_work: internal error {type(e).__name__}: {e} (stop allowed)", file=sys.stderr)
+        return 0
+    if reason:
+        print(reason, file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,22 @@
+// node --test --experimental-strip-types lib/*.test.ts (npm test). Invented paths.
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { test } from "node:test";
+import { parseSmokePlan } from "./smokeRoutes.ts";
+
+test("the shipped route list is valid", () => {
+  const raw = JSON.parse(readFileSync(new URL("../e2e/smoke-routes.json", import.meta.url), "utf8"));
+  const plan = parseSmokePlan(raw);
+  assert.ok(plan.routes.some((r) => r.path === "/"));
+});
+
+test("rows are checked with their index", () => {
+  const ok = { timeout_ms: 5000, routes: [{ path: "/reports", selector: "main" }, { path: "/api/health" }] };
+  assert.deepEqual(parseSmokePlan(ok).routes, [{ path: "/reports", selector: "main" }, { path: "/api/health" }]);
+  assert.throws(() => parseSmokePlan({ timeout_ms: 5000, routes: [] }), /non-empty/);
+  assert.throws(() => parseSmokePlan({ timeout_ms: 5000, routes: [{ path: "https://other.example.test/" }] }), /routes\[0\]/);
+  assert.throws(() => parseSmokePlan({ timeout_ms: 5000, routes: [{ path: "//other.example.test" }] }), /single/);
+  assert.throws(() => parseSmokePlan({ timeout_ms: 5000, routes: [{ path: "/a" }, { path: "/a" }] }), /twice/);
+  assert.throws(() => parseSmokePlan({ timeout_ms: 5000, routes: [{ path: "/a", selector: "" }] }), /selector/);
+  assert.throws(() => parseSmokePlan({ timeout_ms: 10, routes: [{ path: "/a" }] }), /timeout_ms/);
+});

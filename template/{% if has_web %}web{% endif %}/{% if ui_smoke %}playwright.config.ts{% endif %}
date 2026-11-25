@@ -1,0 +1,15 @@
+// Playwright config of the UI smoke (e2e/smoke.spec.ts). The target is always a running deployment: BASE_URL.
+import { defineConfig, devices } from "@playwright/test";
+
+const baseURL = process.env.BASE_URL;
+if (!baseURL) throw new Error("Set BASE_URL to the deployed URL to check (for example a preview URL)");
+
+export default defineConfig({
+  testDir: "./e2e",
+  outputDir: "./e2e/results/artifacts",
+  workers: 1,
+  retries: 0,
+  reporter: [["list"], ["html", { outputFolder: "./e2e/results/report", open: "never" }]],
+  use: { baseURL, headless: true, screenshot: "only-on-failure", trace: "off", video: "off" },
+  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+});

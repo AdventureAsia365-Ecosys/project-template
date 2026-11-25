@@ -1,0 +1,41 @@
+{
+  "_comment": "Settings of the stop hook (stop_open_work.py). Patterns are Python regexes matched without case; max_age_hours is whole hours. Agent-guard values, not product thresholds.",
+  "open_work_files": [
+    ".tmp-session/S*-checklist.md"
+  ],
+  "max_age_hours": 24,
+  "max_listed": 8,
+  "blocked_markers": [
+    "\\[blocked",
+    "\\bblocked\\b",
+    "\\bwait(?:s|ing)?\\b",
+    "\\bafter\\b",
+    "\\bonce\\b",
+    "\\buntil\\b",
+    "\\bneeds? (?:approval|a yes|sign-off)\\b",
+    "\\btech lead\\b",
+    "\\bbusiness owner\\b",
+    "\\bMFA\\b"
+  ],
+  "offer_patterns": [
+    "\\b(?:shall|should|can|may) (?:i|we)\\b.{0,60}\\b(?:continue|go on|keep going|proceed|stop|close|wrap(?: up)?|end)\\b",
+    "\\b(?:do you want|want me to|would you like)\\b.{0,60}\\b(?:continue|go on|keep going|proceed|stop|close|wrap(?: up)?|end)\\b",
+    "\\b(?:continue|keep going|go on|proceed)\\b.{0,30}\\?$"
+  ],
+  "approval_patterns": [
+    "\\bapprov",
+    "\\bdecid",
+    "\\bdecision",
+    "\\bconfirm",
+    "\\bpaid\\b",
+    "\\bcosts?\\b",
+    "\\$\\s*\\d",
+    "\\bdelete\\b",
+    "\\bdestroy\\b",
+    "\\bdry.?run\\b",
+    "\\bMFA\\b",
+    "\\b(?:option|choice) [a-d1-4]\\b",
+    "\\([a-d]\\)"
+  ],
+  "context_paragraphs": 3
+}

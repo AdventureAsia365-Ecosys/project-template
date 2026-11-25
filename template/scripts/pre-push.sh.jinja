@@ -14,6 +14,15 @@ run "hook: subagent guardrails" bash .claude/hooks/test_subagent_guardrails_gene
 run "hook: MCP guardrails" bash .claude/hooks/test_subagent_mcp_guardrails.sh
 run "hook: shell guard" python3 .claude/hooks/test_shell_guard_core.py
 run "hook: settings" python3 .claude/hooks/test_settings_hooks.py
+{%- if stop_hook %}
+run "hook: stop open work" python3 .claude/hooks/test_stop_open_work.py
+{%- endif %}
+{%- if pii_guard %}
+run "hook: personal-data guard" python3 .claude/hooks/test_pii_guard.py
+{%- endif %}
+{%- if has_api_contract %}
+run "api contract script" python3 .github/scripts/test_openapi_breaking.py
+{%- endif %}
 {%- if has_api %}
 if [ -x api/.venv/bin/python ]; then
   run "api tests" bash -c 'cd api && .venv/bin/python -m pytest -q -p no:cacheprovider'

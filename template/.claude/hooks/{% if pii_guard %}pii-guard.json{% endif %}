@@ -1,0 +1,60 @@
+{
+  "_comment": "Settings of the personal-data guard (pii_guard.py). Fill personal_tables from the privacy register: {\"<schema>.<table>\": [\"<personal column>\", ...]}. star_reads: \"any\" (refuse SELECT *, t.* and whole-row reads on every table) or \"listed\" (only on personal_tables). Change it in a reviewed PR.",
+  "personal_tables": {},
+  "personal_columns": [
+    "email",
+    "email_address",
+    "phone",
+    "phone_number",
+    "mobile",
+    "full_name",
+    "first_name",
+    "last_name",
+    "given_name",
+    "family_name",
+    "address",
+    "address_line1",
+    "address_line2",
+    "street",
+    "postal_code",
+    "date_of_birth",
+    "birth_date",
+    "dob",
+    "passport_number",
+    "national_id",
+    "tax_id",
+    "ip_address"
+  ],
+  "star_reads": "any",
+  "db_clients": [
+    "psql",
+    "pgcli",
+    "mysql",
+    "mariadb",
+    "sqlite3",
+    "duckdb",
+    "usql",
+    "clickhouse-client"
+  ],
+  "driver_markers": [
+    "asyncpg",
+    "psycopg",
+    "sqlalchemy",
+    "sqlite3",
+    "pymysql",
+    "mysql.connector",
+    "duckdb",
+    "pg8000"
+  ],
+  "dump_tools": {
+    "pg_dump": [
+      "-s",
+      "--schema-only"
+    ],
+    "mysqldump": [
+      "-d",
+      "--no-data"
+    ]
+  },
+  "max_script_bytes": 1000000
+}

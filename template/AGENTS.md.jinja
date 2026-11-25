@@ -66,11 +66,20 @@ The generic skills read their values here; a skill names a parameter, never a va
 | Plan file | `docs/backlog/README.md` |
 | Session log folder | `docs/sessions/` |
 | Lesson log | `docs/lessons.md` |
+{%- if stop_hook %}
+| Open-work file | `.tmp-session/S<nnn>-checklist.md`: the stop hook refuses to end a turn while it lists unblocked items (`.claude/hooks/stop-open-work.json`) |
+{%- endif %}
+{%- if pii_guard %}
+| Personal-data tables and columns | `.claude/hooks/pii-guard.json` (from the privacy register; the personal-data guard refuses commands that would print them) |
+{%- endif %}
 | Merge command | `gh pr merge <n> --squash` after every check is green (or the merge queue once it is on) |
 | Live-check commands | <cloud identity check; deployed version per service from `/health`; job table idle or busy; open PRs> |
 {%- if has_api %}
 | Health URLs | `<api base URL>/health` (returns the commit SHA), `<api base URL>/health/ready` |
 | Deploy gate | `<api base URL>/deploy-gate` (refuses a deploy while jobs run) |
+{%- if has_api_contract %}
+| API contract | OpenAPI document checked against the base branch on every PR (`.github/workflows/api-contract.yml`); internal paths: `^/admin/` (only this repo's clients); a breaking public change needs the `api-breaking` label |
+{%- endif %}
 | Job table | `{{ project_slug | replace('-', '_') }}.job` |
 | Migration keys | `{{ migration_prefix }}-NNN` in `db/migrations/` |
 | Migration apply command | <the CI workflow that applies migrations> |
@@ -80,6 +89,9 @@ The generic skills read their values here; a skill names a parameter, never a va
 | Web apps and preview hosts | `web/`: <preview host pattern> |
 | Sign-in for automated checks | <test account kind; never a real person's account> |
 | UI kit path | <path of the shared UI components> |
+{%- if has_ui_smoke %}
+| UI smoke routes | `web/e2e/smoke-routes.json` (`.github/workflows/ui-smoke.yml` after each web deploy) |
+{%- endif %}
 {%- endif %}
 | Cloud | {{ cloud }}{% if cloud == 'aws' %} (account and region: <fill in; look IDs up at run time, never commit them>){% endif %} |
 | Cost ledger | <where paid usage is recorded{% if ai_features %}: the model-call ledger table{% endif %}> |

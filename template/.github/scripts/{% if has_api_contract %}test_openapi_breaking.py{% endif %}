@@ -1,0 +1,97 @@
+"""Tests of the API contract gate (openapi_breaking.sh) with a stub in place of oasdiff, so they run without it.
+
+Run: python3 .github/scripts/test_openapi_breaking.py
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+SCRIPT = Path(__file__).resolve().parent / "openapi_breaking.sh"
+
+# The stub answers `changelog` with a line, `breaking --match-path` (internal paths) with STUB_INTERNAL, and the
+# public `breaking ... --fail-on ERR` run with STUB_PUBLIC and exit code STUB_RC.
+STUB = """#!/bin/bash
+case "$1" in
+  changelog) echo "- changed GET /items"; exit 0 ;;
+  breaking)
+    if printf '%s\\n' "$@" | grep -qx -- '--match-path'; then printf '%s' "${STUB_INTERNAL:-}"; exit 0; fi
+    printf '%s' "${STUB_PUBLIC:-}"; exit "${STUB_RC:-0}" ;;
+esac
+exit 9
+"""
+
+BREAKING = "error\t[response-property-removed] at api.json in API GET /items: removed the field 'title'\n"
+
+
+class GateTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        self.stub = d / "oasdiff"
+        self.stub.write_text(STUB, encoding="utf-8")
+        self.stub.chmod(0o755)
+        self.base, self.head, self.summary = d / "base.json", d / "head.json", d / "summary.md"
+        self.base.write_text('{"openapi": "3.1.0"}', encoding="utf-8")
+        self.head.write_text('{"openapi": "3.1.0"}', encoding="utf-8")
+        self.levels = d / "levels.txt"
+        self.levels.write_text("request-parameter-removed err\n", encoding="utf-8")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def gate(self, **env: str) -> subprocess.CompletedProcess:
+        full = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "OASDIFF": str(self.stub),
+            "BASE_SPEC": str(self.base),
+            "HEAD_SPEC": str(self.head),
+            "SEVERITY_LEVELS": str(self.levels),
+            "INTERNAL_PATHS": "^/admin/",
+            "GITHUB_STEP_SUMMARY": str(self.summary),
+            **env,
+        }
+        return subprocess.run(["bash", str(SCRIPT)], capture_output=True, text=True, env=full)
+
+    def test_no_breaking_change_passes(self):
+        r = self.gate()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("No breaking change", r.stdout)
+        self.assertIn("changed GET /items", self.summary.read_text(encoding="utf-8"))
+
+    def test_public_breaking_change_fails(self):
+        r = self.gate(STUB_PUBLIC=BREAKING, STUB_RC="1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("::error title=Breaking API change::", r.stdout)
+
+    def test_label_or_breaking_title_accepts_it(self):
+        r = self.gate(STUB_PUBLIC=BREAKING, STUB_RC="1", ALLOW_BREAKING="true")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("Accepted breaking API change", r.stdout)
+
+    def test_internal_breaking_change_only_warns(self):
+        r = self.gate(STUB_INTERNAL=BREAKING)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("::warning title=Internal API change::", r.stdout)
+
+    def test_oasdiff_failure_fails_even_with_the_label(self):
+        r = self.gate(STUB_RC="3", ALLOW_BREAKING="true")
+        self.assertEqual(r.returncode, 3)
+
+    def test_no_api_on_the_base_passes_and_missing_head_fails(self):
+        self.base.write_text("", encoding="utf-8")
+        self.assertEqual(self.gate().returncode, 0)
+        self.head.unlink()
+        self.assertEqual(self.gate().returncode, 2)
+
+    def test_every_path_public_when_no_internal_rule(self):
+        r = self.gate(INTERNAL_PATHS="", STUB_PUBLIC=BREAKING, STUB_RC="1")
+        self.assertEqual(r.returncode, 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

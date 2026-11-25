@@ -1,0 +1,62 @@
+name: UI smoke
+# Playwright opens each route of web/e2e/smoke-routes.json on a deployed URL (web/e2e/smoke.spec.ts): status below
+# 400, no page or console error, the route's selector visible, one screenshot per page.
+# When: on demand (workflow_dispatch), and as the last step of the web deploy workflow through workflow_call once the
+# deploy is verified (post-deploy-verify.yml first). It never runs on a PR: a PR has no deployment yet.
+# Inside a called workflow, github.event belongs to the caller, so everything here reads inputs.*.
+# Secrets: none (public pages only; pages behind sign-in need a test account first, AGENTS.md). Cost: one standard
+# runner for a few minutes per run.
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: Deployed URL to check (https://<host>)
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      base_url:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ui-smoke-${{ inputs.base_url }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: UI smoke (Playwright)
+    # Pinned image: a new ubuntu-latest can arrive before Playwright supports browsers on it.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    env:
+      BASE_URL: ${{ inputs.base_url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - name: The URL is an https URL
+        run: |
+          case "$BASE_URL" in https://*) ;; *) echo "::error::base_url must start with https://"; exit 1 ;; esac
+      - run: npm install --no-audit --no-fund
+      - name: Install the Playwright browser (chromium)
+        run: npx playwright install --with-deps chromium
+      - name: Run the smoke routes
+        run: npm run smoke
+      - name: Upload the screenshots and the report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ui-smoke-${{ github.run_id }}
+          path: |
+            web/e2e/results/*.png
+            web/e2e/results/report/
+          if-no-files-found: warn
+          retention-days: 14

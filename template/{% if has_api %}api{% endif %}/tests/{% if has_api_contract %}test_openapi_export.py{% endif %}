@@ -1,0 +1,29 @@
+"""The API contract check exports this app's OpenAPI document; the export must work and list the routes."""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+API = Path(__file__).resolve().parents[1]
+EXPORT = API.parent / ".github" / "scripts" / "openapi_export.py"
+
+
+def run_export(api_dir: Path) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, str(EXPORT), str(api_dir)], capture_output=True, text=True, check=False)
+
+
+def test_export_lists_the_routes_sorted():
+    r = run_export(API)
+    assert r.returncode == 0, r.stderr
+    doc = json.loads(r.stdout)
+    assert {"/health", "/health/ready", "/deploy-gate", "/admin/settings"} <= set(doc["paths"])
+    assert r.stdout == json.dumps(doc, indent=2, sort_keys=True) + "\n"
+
+
+def test_export_of_a_branch_without_an_api_is_empty(tmp_path):
+    r = run_export(tmp_path)
+    assert r.returncode == 0
+    assert r.stdout == ""
