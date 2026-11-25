@@ -5,10 +5,16 @@ and another worker takes the job again; after `jobs.max_attempts` attempts the j
 `jobs.retry_delay_seconds` before the next one (`run_after`). Every limit is a setting (settings_registry.py), not a
 literal. The deploy gate (main.py) refuses a deploy while any job is queued or running.
 
-Enqueue with an idempotency key to make a retried request add the job once: a second enqueue with the same key returns
-the first job. A job may carry a tenant; with a per-tenant limit (multi-tenant projects: the setting
-`jobs.max_running_per_tenant`), a claim skips the jobs of a tenant that already holds that many running jobs, so one
-tenant cannot take every worker (the fair-share gate).
+Enqueue with an idempotency key to make a retried request add the job once: a second enqueue with the same key (and
+the same tenant: a key is scoped to its tenant, so two tenants never share a job through one) returns the first job;
+the same key for another kind raises `IdempotencyConflict`. A job may carry a tenant; with a per-tenant limit
+(multi-tenant projects: the setting `jobs.max_running_per_tenant`), a claim skips the jobs of a tenant that already
+holds that many running jobs, so one tenant cannot take every worker (the fair-share gate).
+
+Finishing a job is fenced on its claim: `finish` writes only while the job is still running under the attempt that
+claimed it (`attempts` is bumped on every claim, so it works as a fencing token). A worker whose lease expired and
+whose job another worker took again gets False back and its late result is dropped, so it cannot close a job that
+is still running elsewhere.
 
 `MemoryJobStore` serves tests and local runs; `PostgresJobStore` is the job table of migrations 001 and 002, claimed
 with `FOR UPDATE SKIP LOCKED` so two workers never take the same row.
@@ -18,9 +24,10 @@ Run a worker: python -m app.jobs
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
@@ -33,6 +40,12 @@ from .settings_registry import SettingsRegistry
 QUEUED, RUNNING, DONE, FAILED = "queued", "running", "done", "failed"
 FINISHED = (DONE, FAILED)
 PER_TENANT_LIMIT = "jobs.max_running_per_tenant"
+
+log = logging.getLogger(__name__)
+
+
+class IdempotencyConflict(ValueError):
+    """An idempotency key already names a job of another kind."""
 
 
 @dataclass
@@ -63,11 +76,19 @@ class JobStore(Protocol):
 
     def claim(self, lease_seconds: int, now: datetime, *, per_tenant_limit: int | None = None) -> Job | None: ...
 
-    def finish(self, job: Job, status: str, error: str | None = None, *, run_after: datetime | None = None) -> None: ...
+    def finish(self, job: Job, status: str, error: str | None = None, *, run_after: datetime | None = None) -> bool:
+        """Record the outcome of a claimed job. False (nothing written) when the claim was lost."""
+        ...
 
     def busy_count(self, now: datetime) -> int: ...
 
     def purge_finished(self, before: datetime) -> int: ...
+
+
+def _same_kind(found: Job, kind: str) -> Job:
+    if found.kind != kind:
+        raise IdempotencyConflict(f"the idempotency key already names a {found.kind} job")
+    return found
 
 
 def _claimable(job: Job, now: datetime) -> bool:
@@ -78,6 +99,8 @@ def _claimable(job: Job, now: datetime) -> bool:
 
 @dataclass
 class MemoryJobStore:
+    """In-memory job table. Like the database, it hands out copies: a caller's Job is a snapshot, not the stored row."""
+
     jobs: list[Job] = field(default_factory=list)
 
     def enqueue(
@@ -91,12 +114,12 @@ class MemoryJobStore:
     ) -> Job:
         if idempotency_key is not None:
             for job in self.jobs:
-                if job.idempotency_key == idempotency_key:
-                    return job
+                if (job.tenant_id, job.idempotency_key) == (tenant_id, idempotency_key):
+                    return replace(_same_kind(job, kind))
         job = Job(len(self.jobs) + 1, kind, payload, idempotency_key=idempotency_key, run_after=run_after)
         job.tenant_id = tenant_id
         self.jobs.append(job)
-        return job
+        return replace(job)
 
     def _running(self, tenant_id: str, now: datetime) -> int:
         live = (j for j in self.jobs if j.status == RUNNING and j.lease_until is not None and j.lease_until >= now)
@@ -111,14 +134,19 @@ class MemoryJobStore:
                     continue
             job.status, job.attempts = RUNNING, job.attempts + 1
             job.lease_until = now + timedelta(seconds=lease_seconds)
-            return job
+            return replace(job)
         return None
 
-    def finish(self, job: Job, status: str, error: str | None = None, *, run_after: datetime | None = None) -> None:
-        job.status, job.error, job.lease_until = status, error, None
-        if run_after is not None:
-            job.run_after = run_after
-        job.finished_at = datetime.now(UTC) if status in FINISHED else None
+    def finish(self, job: Job, status: str, error: str | None = None, *, run_after: datetime | None = None) -> bool:
+        stored = next((j for j in self.jobs if j.id == job.id), None)
+        if stored is None or stored.status != RUNNING or stored.attempts != job.attempts:
+            return False
+        for row in (stored, job):
+            row.status, row.error, row.lease_until = status, error, None
+            if run_after is not None:
+                row.run_after = run_after
+            row.finished_at = datetime.now(UTC) if status in FINISHED else None
+        return True
 
     def busy_count(self, now: datetime) -> int:
         return sum(1 for j in self.jobs if j.status in (QUEUED, RUNNING))
@@ -132,6 +160,9 @@ class MemoryJobStore:
 _COLUMNS = "id, kind, payload, status, attempts, lease_until, error, idempotency_key, run_after, finished_at"
 _RETURNING = "RETURNING " + _COLUMNS + "{tenant}"
 _BY_KEY = "SELECT " + _COLUMNS + "{tenant} FROM {schema}.job WHERE idempotency_key = %(key)s"
+# Multi-tenant projects: a key is unique per tenant (migration 002 indexes coalesce(tenant_id, NO_TENANT), key).
+NO_TENANT = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+_TENANT_KEY = "(coalesce(tenant_id, '" + NO_TENANT + "'::uuid), idempotency_key)"
 _DUE = "(j.status = 'queued' OR (j.status = 'running' AND j.lease_until < %(now)s)) AND j.run_after <= %(now)s"
 _CLAIMED = """
 UPDATE {schema}.job SET status = 'running', attempts = attempts + 1,
@@ -194,19 +225,23 @@ class PostgresJobStore:
     ) -> Job:
         if tenant_id is not None and not self._tenant_aware:
             raise ValueError("this job table has no tenant column")
+        conflict = _TENANT_KEY if self._tenant_aware else "(idempotency_key)"
         insert = self._sql(
             "INSERT INTO {schema}.job (kind, payload, idempotency_key, run_after{tenant}) "
             "VALUES (%(kind)s, %(payload)s, %(key)s, coalesce(%(run_after)s::timestamptz, now())"
             + (", %(tenant)s" if self._tenant_aware else "")
-            + ") ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING "
+            + ") ON CONFLICT "
+            + conflict
+            + " WHERE idempotency_key IS NOT NULL DO NOTHING "
             + _RETURNING
         )
+        by_key = _BY_KEY + (" AND tenant_id IS NOT DISTINCT FROM %(tenant)s::uuid" if self._tenant_aware else "")
         args = {"kind": kind, "payload": Jsonb(payload), "key": idempotency_key, "run_after": run_after}
         args["tenant"] = tenant_id
         with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
             row = cur.execute(insert, args).fetchone()
-            if row is None:  # the key was used before: hand back that job
-                row = cur.execute(self._sql(_BY_KEY), args).fetchone()
+            if row is None:  # the key was used before (by this tenant): hand back that job
+                return _same_kind(self._job(cur.execute(self._sql(by_key), args).fetchone()), kind)
         return self._job(row)
 
     def claim(self, lease_seconds: int, now: datetime, *, per_tenant_limit: int | None = None) -> Job | None:
@@ -218,17 +253,22 @@ class PostgresJobStore:
             row = cur.execute(self._sql(FAIR_CLAIM_SQL if fair else CLAIM_SQL), args).fetchone()
         return None if row is None else self._job(row)
 
-    def finish(self, job: Job, status: str, error: str | None = None, *, run_after: datetime | None = None) -> None:
+    def finish(self, job: Job, status: str, error: str | None = None, *, run_after: datetime | None = None) -> bool:
+        # Fenced on the claim: still running, under the attempt this worker claimed.
         update = self._sql(
             "UPDATE {schema}.job SET status = %(status)s, error = %(error)s, lease_until = NULL, "
             "run_after = coalesce(%(run_after)s::timestamptz, run_after), "
-            "finished_at = CASE WHEN %(status)s IN ('done', 'failed') THEN now() END WHERE id = %(id)s"
+            "finished_at = CASE WHEN %(status)s IN ('done', 'failed') THEN now() END "
+            "WHERE id = %(id)s AND status = 'running' AND attempts = %(attempts)s"
         )
+        args = {"status": status, "error": error, "run_after": run_after, "id": job.id, "attempts": job.attempts}
         with self._pool.connection() as conn:
-            conn.execute(update, {"status": status, "error": error, "run_after": run_after, "id": job.id})
+            if conn.execute(update, args).rowcount == 0:
+                return False
         job.status, job.error, job.lease_until = status, error, None
         if run_after is not None:
             job.run_after = run_after
+        return True
 
     def busy_count(self, now: datetime) -> int:
         count = self._sql("SELECT count(*) FROM {schema}.job WHERE status IN ('queued', 'running')")
@@ -242,6 +282,11 @@ class PostgresJobStore:
 
 
 Handler = Callable[[dict], None]
+
+
+def _finish(store: JobStore, job: Job, status: str, error: str | None = None, **kw: Any) -> None:
+    if not store.finish(job, status, error, **kw):
+        log.warning("job %s: lease lost after attempt %s, result %s dropped", job.id, job.attempts, status)
 
 
 def _limit(settings: SettingsRegistry) -> int | None:
@@ -259,23 +304,23 @@ def run_once(
     if job is None:
         return None
     if job.attempts > settings.get("jobs.max_attempts"):
-        store.finish(job, FAILED, "too many attempts")
+        _finish(store, job, FAILED, "too many attempts")
         return job
     handler = handlers.get(job.kind)
     if handler is None:
-        store.finish(job, FAILED, f"no handler for kind {job.kind}")
+        _finish(store, job, FAILED, f"no handler for kind {job.kind}")
         return job
     payload = job.payload if job.tenant_id is None else {**job.payload, "tenant_id": job.tenant_id}
     try:
         handler(payload)
     except Exception as e:  # noqa: BLE001 - a failed job is recorded, the worker goes on
         if job.attempts >= settings.get("jobs.max_attempts"):
-            store.finish(job, FAILED, str(e)[:500])
+            _finish(store, job, FAILED, str(e)[:500])
         else:
             retry_at = now + timedelta(seconds=settings.get("jobs.retry_delay_seconds"))
-            store.finish(job, QUEUED, str(e)[:500], run_after=retry_at)
+            _finish(store, job, QUEUED, str(e)[:500], run_after=retry_at)
         return job
-    store.finish(job, DONE)
+    _finish(store, job, DONE)
     return job
 
 

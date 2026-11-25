@@ -25,7 +25,7 @@ Copier asks the day-1 questionnaire:
 | Repo layout | single repo; root repo of several; app repo | single repo |
 | Stacks | Python API, Next.js web, Lambda | Python API and Next.js web |
 | Multi-tenant | yes / no (row-level security with FORCE, isolation probe, tenant-scoped connection pool, fair-share job gate) | no |
-| AI features | yes / no (model gateway core with routing, fallback and monthly spend caps; model-call ledger, AI use and prompt registers, eval workflow) | no |
+| AI features | yes / no (model gateway core with admin-edited routes, fallback and monthly spend caps; model-call ledger, AI use and prompt registers, eval workflow) | no |
 | Cloud | AWS / none | AWS |
 | Tracker | Linear / GitHub Issues / Jira | Linear |
 | Issue key prefix | text | none (GH for GitHub Issues) |

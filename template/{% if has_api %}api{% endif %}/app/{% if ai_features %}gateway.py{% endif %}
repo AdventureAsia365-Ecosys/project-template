@@ -1,7 +1,11 @@
 """Model gateway core: the one client every model call goes through.
 
 - Routing by role: a role (writer, judge, ...) names an ordered list of targets (provider and model). Code asks for
-  a role, never for a provider.
+  a role, never for a provider. The routes are data an administrator edits (`/admin/model-routes`, every change
+  audited), kept behind `RouteStore`: `MemoryRouteStore` for tests and local runs, `PostgresRouteStore` (the
+  `model_route` and `model_route_audit` tables of migration 002) in deployed environments. The gateway reads the
+  route on every call, so a change takes effect at once; a save is refused when it names a provider that is not
+  registered (the picker is `Gateway.provider_names()`), and every registered provider has a cap setting.
 - Ordered fallback: when a target fails, or its provider's monthly cap would be passed, the next target is tried.
   A `FatalProviderError` (a request the provider will never accept) stops the chain instead.
 - Spend caps, enforced before the call and fail-closed: the month's spend in the ledger plus the provider's estimate
@@ -24,6 +28,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol
+
+from psycopg import sql
+from psycopg.types.json import Jsonb
 
 from .model_ledger import Ledger, billed_fields, record_call
 from .settings_registry import Setting, SettingsRegistry
@@ -82,6 +89,97 @@ class FatalProviderError(RuntimeError):
     """Raised by a provider for a request no provider would accept (the chain stops)."""
 
 
+class RouteError(ValueError):
+    """A route that may not be saved: no target, an unknown provider, an empty model or a repeated target."""
+
+
+@dataclass(frozen=True)
+class RouteChange:
+    role: str
+    old: list[Target]
+    new: list[Target]
+    changed_by: str
+    changed_at: datetime
+
+
+def targets_json(targets: list[Target]) -> list[dict[str, str]]:
+    return [{"provider": t.provider, "model": t.model} for t in targets]
+
+
+class RouteStore(Protocol):
+    def load(self, role: str) -> list[Target]: ...
+
+    def all(self) -> dict[str, list[Target]]: ...
+
+    def save(self, role: str, targets: list[Target], changed_by: str, at: datetime) -> RouteChange:
+        """Replace the role's targets and write its audit row together; the old targets are read under one lock."""
+        ...
+
+
+@dataclass
+class MemoryRouteStore:
+    routes: dict[str, list[Target]] = field(default_factory=dict)
+    audit: list[RouteChange] = field(default_factory=list)
+
+    def load(self, role: str) -> list[Target]:
+        return list(self.routes.get(role, []))
+
+    def all(self) -> dict[str, list[Target]]:
+        return {role: list(targets) for role, targets in sorted(self.routes.items())}
+
+    def save(self, role: str, targets: list[Target], changed_by: str, at: datetime) -> RouteChange:
+        change = RouteChange(role, self.load(role), list(targets), changed_by, at)
+        self.routes[role] = list(targets)
+        self.audit.append(change)
+        return change
+
+
+class PostgresRouteStore:
+    """The `model_route` (one row per target, in order) and `model_route_audit` tables."""
+
+    def __init__(self, pool: Any, schema: str) -> None:
+        self._pool = pool
+
+        def q(text: str) -> sql.Composed:
+            return sql.SQL(text).format(schema=sql.Identifier(schema))
+
+        self._load = q("SELECT provider, model FROM {schema}.model_route WHERE role = %(role)s ORDER BY position")
+        self._all = q("SELECT role, provider, model FROM {schema}.model_route ORDER BY role, position")
+        self._delete = q("DELETE FROM {schema}.model_route WHERE role = %(role)s")
+        self._insert = q(
+            "INSERT INTO {schema}.model_route (role, position, provider, model) "
+            "VALUES (%(role)s, %(position)s, %(provider)s, %(model)s)"
+        )
+        self._audit = q(
+            "INSERT INTO {schema}.model_route_audit (role, old_targets, new_targets, changed_by, changed_at) "
+            "VALUES (%(role)s, %(old)s, %(new)s, %(by)s, %(at)s)"
+        )
+        self._lock = f"{schema}.model_route:"
+
+    def load(self, role: str) -> list[Target]:
+        with self._pool.connection() as conn:
+            return [Target(*row) for row in conn.execute(self._load, {"role": role}).fetchall()]
+
+    def all(self) -> dict[str, list[Target]]:
+        routes: dict[str, list[Target]] = {}
+        with self._pool.connection() as conn:
+            for role, provider, model in conn.execute(self._all).fetchall():
+                routes.setdefault(role, []).append(Target(provider, model))
+        return routes
+
+    def save(self, role: str, targets: list[Target], changed_by: str, at: datetime) -> RouteChange:
+        with self._pool.connection() as conn, conn.transaction():
+            conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (self._lock + role,))
+            old = [Target(*row) for row in conn.execute(self._load, {"role": role}).fetchall()]
+            conn.execute(self._delete, {"role": role})
+            for position, t in enumerate(targets, start=1):
+                row = {"role": role, "position": position, "provider": t.provider, "model": t.model}
+                conn.execute(self._insert, row)
+            args = {"role": role, "by": changed_by, "at": at}
+            conn.execute(self._audit, {**args, "old": Jsonb(targets_json(old)), "new": Jsonb(targets_json(targets))})
+        return RouteChange(role, old, list(targets), changed_by, at)
+
+
 @dataclass
 class FakeProvider:
     """A scripted provider: each call takes the next item of `script` (a response dict, or an exception to raise)."""
@@ -111,24 +209,53 @@ def month_start(now: datetime) -> datetime:
 
 
 class Gateway:
+    """`routes` is a route store, or a dict of seed routes for tests and local runs (checked, then kept in memory)."""
+
     def __init__(
         self,
         providers: list[Provider],
-        routes: dict[str, list[Target]],
+        routes: RouteStore | dict[str, list[Target]],
         ledger: Ledger,
         settings: SettingsRegistry,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._providers = {p.name: p for p in providers}
-        self._routes, self._ledger, self._settings, self._clock = routes, ledger, settings, clock
-        for role, targets in routes.items():
-            for t in targets:
-                if t.provider not in self._providers:
-                    raise ValueError(f"route {role}: unknown provider {t.provider}")
-                if not settings.has(provider_cap(t.provider).key):
-                    raise ValueError(f"route {role}: provider {t.provider} has no cap setting (provider_cap)")
+        self._ledger, self._settings, self._clock = ledger, settings, clock
         if not settings.has(TOTAL_CAP):
             raise ValueError(f"the settings registry lacks {TOTAL_CAP} (GATEWAY_SETTINGS)")
+        for name in self._providers:
+            if not settings.has(provider_cap(name).key):
+                raise ValueError(f"provider {name} has no cap setting (add provider_cap({name!r}) to the settings)")
+        if isinstance(routes, dict):
+            for role, targets in routes.items():
+                self.check_route(role, targets)
+            routes = MemoryRouteStore({role: list(targets) for role, targets in routes.items()})
+        self._routes: RouteStore = routes
+
+    def provider_names(self) -> list[str]:
+        """The providers a route may name (the administrator's picker)."""
+        return sorted(self._providers)
+
+    def routes(self) -> dict[str, list[Target]]:
+        return self._routes.all()
+
+    def check_route(self, role: str, targets: list[Target]) -> None:
+        if not role.strip():
+            raise RouteError("a route needs a role")
+        if not targets:
+            raise RouteError(f"route {role}: at least one target (a provider is turned off with its cap set to 0)")
+        for t in targets:
+            if t.provider not in self._providers:
+                raise RouteError(f"route {role}: unknown provider {t.provider}; registered: {self.provider_names()}")
+            if not t.model.strip():
+                raise RouteError(f"route {role}: provider {t.provider} needs a model")
+        if len(set(targets)) != len(targets):
+            raise RouteError(f"route {role}: a target appears twice")
+
+    def set_route(self, role: str, targets: list[Target], changed_by: str) -> RouteChange:
+        """Check and save a role's ordered targets; the store writes the audit row with the change."""
+        self.check_route(role, targets)
+        return self._routes.save(role, list(targets), changed_by, self._clock())
 
     def _record(self, stage: str, role: str, target: Target, outcome: str, resp: dict, latency_ms: int | None) -> None:
         record_call(
@@ -154,11 +281,15 @@ class Gateway:
 
     def generate(self, role: str, stage: str, request: Request) -> Result:
         """Answer `request` with the first target of `role` that is within its caps and succeeds."""
-        if role not in self._routes:
+        targets = self._routes.load(role)
+        if not targets:
             raise GatewayError(f"no route for role {role}")
         failures: list[str] = []
-        for target in self._routes[role]:
-            provider = self._providers[target.provider]
+        for target in targets:
+            provider = self._providers.get(target.provider)
+            if provider is None:  # a stored route that names a provider no longer registered: not an attempt
+                failures.append(f"{target.provider}: not registered")
+                continue
             try:
                 total_ok, own_ok = self._within_caps(target, provider.estimate_cost_usd(target.model, request))
             except Exception as e:  # fail closed: no spend figure, no call

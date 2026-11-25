@@ -11,9 +11,12 @@ import os
 from dataclasses import dataclass
 from typing import Any
 {% if ai_features %}
-from .gateway import GATEWAY_SETTINGS
+from .gateway import GATEWAY_SETTINGS, Gateway, MemoryRouteStore, PostgresRouteStore, Provider, provider_cap
 {%- endif %}
 from .jobs import JobStore, MemoryJobStore, PostgresJobStore
+{%- if ai_features %}
+from .model_ledger import MemoryLedger, PostgresLedger
+{%- endif %}
 from .settings_registry import SETTINGS, MemorySettingsStore, PostgresSettingsStore, Setting, SettingsRegistry
 {%- if multi_tenant %}
 from .tenancy import TENANCY_SETTINGS
@@ -21,10 +24,22 @@ from .tenancy import TENANCY_SETTINGS
 
 SCHEMA = "{{ project_slug | replace('-', '_') }}"
 MULTI_TENANT = {{ 'True' if multi_tenant else 'False' }}
+{%- if ai_features %}
 
-# Every setting the code reads. Add a module's tuple here when it declares its own{% if ai_features %} (and one
-# gateway.provider_cap(<name>) per model provider the routes use){% endif %}.
-ALL_SETTINGS: tuple[Setting, ...] = SETTINGS{% if multi_tenant %} + TENANCY_SETTINGS{% endif %}{% if ai_features %} + GATEWAY_SETTINGS{% endif %}
+# The model providers the gateway may route to: one adapter per vendor (gateway.Provider), each with its monthly cap
+# setting. Add the adapter's name here and return the adapter from model_providers(); the gateway refuses to start
+# when a provider has no cap setting, and an administrator may route a role only to a provider listed here.
+MODEL_PROVIDERS: tuple[str, ...] = ()
+PROVIDER_CAPS: tuple[Setting, ...] = tuple(provider_cap(name) for name in MODEL_PROVIDERS)
+
+
+def model_providers() -> list[Provider]:
+    return []
+{%- endif %}
+
+
+# Every setting the code reads. Add a module's tuple here when it declares its own.
+ALL_SETTINGS: tuple[Setting, ...] = SETTINGS{% if multi_tenant %} + TENANCY_SETTINGS{% endif %}{% if ai_features %} + GATEWAY_SETTINGS + PROVIDER_CAPS{% endif %}
 
 
 @dataclass
@@ -50,6 +65,16 @@ def build_stores(pool: Any | None) -> Stores:
         return Stores(MemoryJobStore(), SettingsRegistry(MemorySettingsStore(), ALL_SETTINGS))
     jobs = PostgresJobStore(pool, SCHEMA, tenant_aware=MULTI_TENANT)
     return Stores(jobs, SettingsRegistry(PostgresSettingsStore(pool, SCHEMA), ALL_SETTINGS))
+{%- if ai_features %}
+
+
+def build_gateway(pool: Any | None, settings: SettingsRegistry, providers: list[Provider] | None = None) -> Gateway:
+    """The model gateway: database ledger and routes with a pool, in-memory ones without."""
+    providers = model_providers() if providers is None else providers
+    if pool is None:
+        return Gateway(providers, MemoryRouteStore(), MemoryLedger(), settings)
+    return Gateway(providers, PostgresRouteStore(pool, SCHEMA), PostgresLedger(pool, SCHEMA), settings)
+{%- endif %}
 
 
 def database_ready(pool: Any) -> bool:

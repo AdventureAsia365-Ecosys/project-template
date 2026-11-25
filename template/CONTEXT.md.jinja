@@ -61,8 +61,9 @@ the same PR. Delete this comment when the page is filled. -->
   holds at most `jobs.max_running_per_tenant` running jobs (fair-share gate).
 {%- endif %}
 {%- if ai_features %}
-- AI: every model call goes through the gateway (`api/app/gateway.py`: routes by role, fallback, monthly spend caps
-  checked before the call) and is written to the call ledger with its billed tokens and cost (`docs/ai/README.md`).
+- AI: every model call goes through the gateway (`api/app/gateway.py`: routes by role that an administrator edits,
+  fallback, monthly spend caps checked before the call) and is written to the call ledger with its billed tokens
+  and cost (`docs/ai/README.md`).
 {%- endif %}
 
 ## 9. Decisions

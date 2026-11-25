@@ -8,8 +8,10 @@ All notable changes of the template. Written by release-please from the Conventi
 ### Features
 
 - Database-backed stores (Python API projects): `PostgresSettingsStore` (a change and its audit row commit together)
-  and `PostgresJobStore` (claims with `FOR UPDATE SKIP LOCKED`, an idempotency key that adds a job once, `run_after`,
-  attempts, a retry delay, clean-up of finished jobs after `jobs.retention_days`) behind the same interfaces as the
+  and `PostgresJobStore` (claims with `FOR UPDATE SKIP LOCKED`, an idempotency key that adds a job once (scoped to
+  the tenant in multi-tenant projects; reusing a key for another kind raises `IdempotencyConflict`), `run_after`,
+  attempts, a retry delay, a finish fenced on the claim so a worker whose lease expired cannot close a job another
+  worker took again, clean-up of finished jobs after `jobs.retention_days`) behind the same interfaces as the
   in-memory stores, which stay for tests. `api/app/wiring.py` picks the database stores when `DATABASE_URL` is set;
   the API opens the pool at start-up and `/health/ready` checks it. Migration `<prefix>-002` (expand) adds the job
   columns and indexes. New setting `jobs.retry_delay_seconds`.
@@ -17,8 +19,10 @@ All notable changes of the template. Written by release-please from the Conventi
   transaction with `SET LOCAL app.tenant_id` (and the app role) and refuses a missing or malformed tenant before any
   query; a fair-share job gate keeps one tenant to `jobs.max_running_per_tenant` running jobs (a setting), with
   claims serialised by an advisory lock so parallel workers cannot pass it.
-- AI features (question `ai_features`): the model gateway core `api/app/gateway.py`: routing by role, ordered
-  fallback across providers, monthly spend caps (`ai.monthly_cap_usd` and one `ai.monthly_cap_usd.<provider>` per
+- AI features (question `ai_features`): the model gateway core `api/app/gateway.py`: routing by role (routes are
+  data in `model_route`, changed by an administrator at `/admin/model-routes` with the provider picked from the
+  registered ones and every change audited in `model_route_audit`; read on every call), ordered fallback across
+  providers, monthly spend caps (`ai.monthly_cap_usd` and one `ai.monthly_cap_usd.<provider>` per
   provider, settings) checked against the ledger before each call and fail-closed, and one ledger row per attempt
   with the billed fields. `FakeProvider` for tests; no real provider or key ships.
 - Generated CI: the API job runs on a throwaway Postgres service with the migrations applied, so the integration
@@ -31,7 +35,9 @@ All notable changes of the template. Written by release-please from the Conventi
 `copier update` adds migration `<prefix>-002`, `api/app/wiring.py` and the database tests, and changes `jobs.py`,
 `settings_registry.py` and `main.py`. Nothing changes until `DATABASE_URL` is set: without it the API keeps the
 in-memory stores. Apply `<prefix>-002` before deploying the new code with `DATABASE_URL`. The job store interface
-gained keyword arguments with defaults, so existing callers keep working; a retried job now waits
+gained keyword arguments with defaults, so existing callers keep working; `finish` now returns False (and writes
+nothing) when the job is no longer running under the caller's claim, and `MemoryJobStore` hands out copies like the
+database does (compare jobs by `id`, not identity); a retried job now waits
 `jobs.retry_delay_seconds` (default 30) before its next attempt. New dependencies: `psycopg` and `psycopg-pool`
 (`asyncpg` stays for projects that use it).
 

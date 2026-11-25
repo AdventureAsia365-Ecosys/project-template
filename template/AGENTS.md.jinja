@@ -82,7 +82,7 @@ The generic skills read their values here; a skill names a parameter, never a va
 {%- endif %}
 | Job table | `{{ project_slug | replace('-', '_') }}.job` |
 | Settings | `<api base URL>/admin/settings` (administrator); every setting the code reads is in `api/app/wiring.py` (`ALL_SETTINGS`) |{%- if ai_features %}
-| Model gateway | `api/app/gateway.py`: routes by role, provider adapters, caps `ai.monthly_cap_usd` and `ai.monthly_cap_usd.<provider>` |{%- endif %}
+| Model gateway | `api/app/gateway.py`: routes by role (admin-edited at `<api base URL>/admin/model-routes`, audited in `model_route_audit`), providers registered in `api/app/wiring.py`, caps `ai.monthly_cap_usd` and `ai.monthly_cap_usd.<provider>` |{%- endif %}
 | Migration keys | `{{ migration_prefix }}-NNN` in `db/migrations/` |
 | Migration apply command | <the CI workflow that applies migrations> |
 {%- endif %}

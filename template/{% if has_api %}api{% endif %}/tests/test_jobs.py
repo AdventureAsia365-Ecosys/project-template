@@ -5,7 +5,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from app.jobs import DONE, FAILED, QUEUED, RUNNING, MemoryJobStore, purge, run_once
+import pytest
+
+from app.jobs import DONE, FAILED, QUEUED, RUNNING, IdempotencyConflict, MemoryJobStore, purge, run_once
 from app.settings_registry import SETTINGS, MemorySettingsStore, Setting, SettingsRegistry
 
 T0 = datetime(2030, 1, 1, tzinfo=UTC)
@@ -57,7 +59,29 @@ def test_expired_lease_is_claimed_again():
     assert job.status == RUNNING
     assert store.claim(lease_seconds=60, now=T0 + timedelta(seconds=30)) is None
     again = store.claim(lease_seconds=60, now=T0 + timedelta(seconds=61))
-    assert again is job and again.attempts == 2
+    assert again.id == job.id and again.attempts == 2
+
+
+def test_a_stale_worker_cannot_finish_a_job_taken_again():
+    store = MemoryJobStore()
+    store.enqueue("slow", {})
+    stale = store.claim(lease_seconds=60, now=T0)
+    fresh = store.claim(lease_seconds=60, now=T0 + timedelta(seconds=61))
+    assert store.finish(stale, DONE) is False
+    assert store.jobs[0].status == RUNNING and store.busy_count(T0) == 1
+    assert store.finish(fresh, DONE) is True
+    assert store.jobs[0].status == DONE and store.finish(fresh, FAILED) is False
+
+
+def test_run_once_drops_the_result_of_a_lost_lease():
+    store = MemoryJobStore()
+    store.enqueue("slow", {})
+
+    def taken_again(_):
+        store.claim(lease_seconds=60, now=T0 + timedelta(seconds=301))  # another worker, after the lease ran out
+
+    job = run_once(store, registry(), {"slow": taken_again}, now=T0)
+    assert job.status == RUNNING and store.jobs[0].status == RUNNING and store.jobs[0].attempts == 2
 
 
 def test_busy_count_covers_queued_and_running():
@@ -72,7 +96,23 @@ def test_idempotency_key_adds_the_job_once():
     store = MemoryJobStore()
     first = store.enqueue("report", {"month": "2030-01"}, idempotency_key="report-2030-01")
     again = store.enqueue("report", {"month": "other"}, idempotency_key="report-2030-01")
-    assert again is first and len(store.jobs) == 1
+    assert again.id == first.id and again.payload == {"month": "2030-01"} and len(store.jobs) == 1
+
+
+def test_idempotency_keys_are_scoped_to_the_tenant():
+    store = MemoryJobStore()
+    a = store.enqueue("report", {"owner": "a"}, idempotency_key="report-2030-01", tenant_id="tenant-a")
+    b = store.enqueue("report", {"owner": "b"}, idempotency_key="report-2030-01", tenant_id="tenant-b")
+    assert a.id != b.id and (b.tenant_id, b.payload) == ("tenant-b", {"owner": "b"})
+    again = store.enqueue("report", {"owner": "b"}, idempotency_key="report-2030-01", tenant_id="tenant-b")
+    assert again.id == b.id and len(store.jobs) == 2
+
+
+def test_a_key_reused_for_another_kind_is_a_conflict():
+    store = MemoryJobStore()
+    store.enqueue("report", {}, idempotency_key="report-2030-01")
+    with pytest.raises(IdempotencyConflict):
+        store.enqueue("invoice", {}, idempotency_key="report-2030-01")
 
 
 def test_run_after_holds_a_job_back():
@@ -102,8 +142,9 @@ def test_per_tenant_limit_lets_other_tenants_through():
 
 def test_purge_removes_only_old_finished_jobs():
     store = MemoryJobStore()
-    keep, old = store.enqueue("keep", {}), store.enqueue("old", {})
-    store.finish(old, DONE)
-    old.finished_at = old.finished_at - timedelta(days=40)
+    store.enqueue("old", {})
+    store.enqueue("keep", {})
+    assert store.finish(store.claim(lease_seconds=60, now=T0), DONE)
+    store.jobs[0].finished_at -= timedelta(days=40)
     assert purge(store, registry()) == 1
-    assert store.jobs == [keep]
+    assert [j.kind for j in store.jobs] == ["keep"]

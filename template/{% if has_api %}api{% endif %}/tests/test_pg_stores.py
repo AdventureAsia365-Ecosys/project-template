@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from fastapi.testclient import TestClient
 
-from app.jobs import DONE, FAILED, QUEUED, RUNNING, PostgresJobStore, purge, run_once
+from app.jobs import DONE, FAILED, QUEUED, RUNNING, IdempotencyConflict, PostgresJobStore, purge, run_once
 from app.main import create_app
 from app.settings_registry import PostgresSettingsStore, SettingError, SettingsRegistry
 from app.wiring import ALL_SETTINGS, MULTI_TENANT, SCHEMA, build_stores, database_ready
@@ -60,6 +60,22 @@ def test_idempotency_key_adds_the_job_once(pool):
     again = store.enqueue("report", {"month": "other"}, idempotency_key="report-2030-01")
     assert again.id == first.id and again.payload == {"month": "2030-01"}
     assert store.busy_count(T0) == 1
+    with pytest.raises(IdempotencyConflict):
+        store.enqueue("invoice", {}, idempotency_key="report-2030-01")
+
+
+def test_a_stale_worker_cannot_finish_a_job_taken_again(pool):
+    store = jobs(pool)
+    store.enqueue("slow", {}, run_after=T0)
+    stale = store.claim(60, T0)
+    fresh = store.claim(60, T0 + timedelta(seconds=61))
+    assert fresh.attempts == 2
+    assert store.finish(stale, DONE) is False
+    with pool.connection() as conn:
+        row = conn.execute(f"SELECT status, attempts FROM {SCHEMA}.job WHERE id = %s", (fresh.id,)).fetchone()
+    assert row == ("running", 2) and store.busy_count(T0) == 1
+    assert store.finish(stale, QUEUED, "late retry", run_after=T0) is False
+    assert store.finish(fresh, DONE) is True and store.busy_count(T0) == 0
 
 
 def test_run_after_holds_a_job_back(pool):
@@ -105,9 +121,9 @@ def test_run_once_retries_after_the_delay_then_fails(pool):
 
 def test_purge_removes_only_old_finished_jobs(pool):
     store = jobs(pool)
-    store.enqueue("keep", {}, run_after=T0)
     done = store.enqueue("old", {}, run_after=T0)
-    store.finish(done, DONE)
+    store.enqueue("keep", {}, run_after=T0 + timedelta(minutes=1))
+    assert store.finish(store.claim(60, T0), DONE)
     with pool.connection() as conn:
         conn.execute(f"UPDATE {SCHEMA}.job SET finished_at = now() - interval '40 days' WHERE id = %s", (done.id,))
     assert purge(store, registry(pool)) == 1

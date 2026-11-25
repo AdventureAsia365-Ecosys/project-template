@@ -14,7 +14,16 @@ import pytest
 
 from app.wiring import SCHEMA
 
-TABLES = ("job", "settings", "settings_audit", "model_call_log", "tenant_note", "tenant")
+TABLES = (
+    "job",
+    "settings",
+    "settings_audit",
+    "model_call_log",
+    "model_route",
+    "model_route_audit",
+    "tenant_note",
+    "tenant",
+)
 
 
 @pytest.fixture(scope="session")

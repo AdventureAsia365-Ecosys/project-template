@@ -108,6 +108,18 @@ def test_parallel_workers_never_pass_the_limit(pool):
     assert len(claimed) == 2 and len(set(claimed)) == 2
 
 
+def test_idempotency_keys_are_scoped_to_the_tenant(pool):
+    seed_tenants(pool)
+    store = PostgresJobStore(pool, SCHEMA, tenant_aware=True)
+    a = store.enqueue("report", {"owner": "A"}, idempotency_key="report-2030-01", tenant_id=TENANT_A)
+    b = store.enqueue("report", {"owner": "B"}, idempotency_key="report-2030-01", tenant_id=TENANT_B)
+    assert a.id != b.id and (b.tenant_id, b.payload) == (TENANT_B, {"owner": "B"})
+    assert store.enqueue("report", {}, idempotency_key="report-2030-01", tenant_id=TENANT_B).id == b.id
+    untenanted = store.enqueue("report", {"owner": None}, idempotency_key="report-2030-01")
+    assert store.enqueue("report", {}, idempotency_key="report-2030-01").id == untenanted.id
+    assert store.busy_count(T0) == 3
+
+
 def test_a_tenant_job_needs_the_tenant_column(pool):
     with pytest.raises(ValueError):
         PostgresJobStore(pool, SCHEMA, tenant_aware=False).enqueue("work", {}, tenant_id=TENANT_A)

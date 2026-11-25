@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from app.jobs import MemoryJobStore
 from app.main import create_app
 from app.settings_registry import MemorySettingsStore, SettingsRegistry
+from app.wiring import ALL_SETTINGS
 
 
 def client(role: str | None = None, **kw) -> TestClient:
@@ -46,7 +47,7 @@ def test_admin_settings_need_sign_in_and_the_admin_role():
 
 def test_admin_change_is_bounded_and_audited():
     store = MemorySettingsStore()
-    c = client(role="administrator", settings=SettingsRegistry(store))
+    c = client(role="administrator", settings=SettingsRegistry(store, ALL_SETTINGS))
     r = c.put("/admin/settings/jobs.max_attempts", json={"value": 5})
     assert r.status_code == 200
     assert r.json() == {"key": "jobs.max_attempts", "old": 3, "new": 5}
