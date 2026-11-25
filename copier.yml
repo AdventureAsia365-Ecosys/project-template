@@ -57,13 +57,13 @@ stacks:
 
 multi_tenant:
   type: bool
-  help: Multi-tenant (adds row-level security with FORCE and an isolation probe test; the tenant-scoped pool and the fair-share job gate are not in 1.0.0, see CHANGELOG.md)
+  help: Multi-tenant (adds row-level security with FORCE and an isolation probe test; the tenant-scoped pool and the fair-share job gate are not in this release yet, see CHANGELOG.md)
   default: false
   when: "{{ repo_layout != 'root' and 'python-api' in stacks }}"
 
 ai_features:
   type: bool
-  help: AI features (adds the model-call ledger, the prompt register, the AI use register and an eval workflow; the model gateway core is not in 1.0.0, see CHANGELOG.md)
+  help: AI features (adds the model-call ledger, the prompt register, the AI use register and an eval workflow; the model gateway core is not in this release yet, see CHANGELOG.md)
   default: false
 
 cloud:
@@ -117,6 +117,28 @@ team_shape:
     Engineers only: engineers-only
   default: lead-plus-agents
 
+stop_hook:
+  type: bool
+  help: Stop hook (refuses once to end an agent's turn while the open-work file lists unblocked items; settings in .claude/hooks/stop-open-work.json)
+  default: "{{ team_shape != 'engineers-only' }}"
+
+pii_guard:
+  type: bool
+  help: Personal-data guard (refuses shell commands whose SQL would print personal columns or whole rows; the tables and columns are listed in .claude/hooks/pii-guard.json)
+  default: true
+
+api_contract:
+  type: bool
+  help: API contract check (each PR compares the API's OpenAPI document with the base branch; a breaking change fails unless the PR is labelled api-breaking)
+  default: true
+  when: "{{ repo_layout != 'root' and 'python-api' in stacks }}"
+
+ui_smoke:
+  type: bool
+  help: UI smoke workflow (Playwright opens each route of web/e2e/smoke-routes.json on a deployed URL, after a deploy or on demand)
+  default: true
+  when: "{{ repo_layout != 'root' and 'nextjs-web' in stacks }}"
+
 default_branch:
   type: str
   help: Default branch
@@ -164,6 +186,16 @@ has_db:
 has_infra:
   type: bool
   default: "{{ cloud == 'aws' and repo_layout != 'app' }}"
+  when: false
+
+has_api_contract:
+  type: bool
+  default: "{{ repo_layout != 'root' and 'python-api' in stacks and api_contract }}"
+  when: false
+
+has_ui_smoke:
+  type: bool
+  default: "{{ repo_layout != 'root' and 'nextjs-web' in stacks and ui_smoke }}"
   when: false
 
 has_agents:

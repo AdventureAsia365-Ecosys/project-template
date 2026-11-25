@@ -1,0 +1,446 @@
+#!/usr/bin/env python3
+"""Personal-data guard (PreToolUse hook on Bash): an agent never prints rows of personal data from a database.
+
+Agents reach a database through the shell: a client (`psql -c`, `psql -f file`, a heredoc), or a Python script that
+uses a driver (`python3 -c ...`, `python3 script.py`). Whatever the command prints lands in the transcript, the
+session log and maybe a PR. This hook reads the SQL such a command carries before it runs and refuses it (exit 2,
+the reason on stderr) when a statement would print personal data. Counts and aggregates pass.
+
+What is personal (`.claude/hooks/pii-guard.json`, the project fills it from its privacy register on day 1):
+  personal_tables   {"<schema>.<table>": ["<column>", ...]}: tables that hold personal rows, with their personal
+                    columns. A star, whole-row or COPY read of such a table is refused, and so is a listed column.
+  personal_columns  column names that are personal in ANY table (a conservative default list of common names:
+                    email, phone, address, birth date, document numbers ...).
+  star_reads        "any" (default, conservative: `SELECT *`, `t.*`, a whole-row value or `COPY <table> TO` is
+                    refused on every table, because nobody knows which columns a table will grow) or "listed" (only
+                    on personal_tables).
+  db_clients, driver_markers, dump_tools, max_script_bytes: what counts as a database command, and the largest
+                    script file the hook reads.
+
+A statement is refused when the select list of any SELECT (subqueries too) or a RETURNING list names a personal
+column (bare, `t.col`, inside a function such as `lower(email)` or `string_agg(email, ',')`), a star or a whole row
+(`t`, `t::text`, `row_to_json(t)`) as above, a select list filled at run time (`f"SELECT {cols} ..."`, `$COLS`), or
+an XML export function that runs SQL text (`query_to_xml`). Allowed anywhere: `count(...)`, `<col> IS [NOT] NULL`,
+and every column in WHERE, JOIN, GROUP BY and ORDER BY. A data dump (`pg_dump`, `mysqldump` without the schema-only
+flag) is refused. A script or SQL file the command runs that cannot be read (missing, too large, binary) is refused.
+
+How it reads: heredoc bodies and the shell words of the command (quotes removed; a `bash -c '...'` body is read as a
+command again), the files given to a client (`-f`, `--file`, `< file`, any `*.sql` word of a client command) and the
+Python scripts run with a driver (string literals only, read with `ast`). The SQL
+reader drops comments and blanks string literals in one left-to-right pass, so `'--'` cannot hide the rest of a
+statement; dollar-quoted bodies (DO blocks, functions) are read as SQL too. Static reading, so a heuristic: SQL
+built from pieces in separate variables, read from a file at run time, or sent by another program is not seen; the
+review and the database grants remain the real controls.
+
+Failure: unreadable hook input passes (exit 0). An error inside the hook refuses a database command and passes any
+other command.
+
+Check a script before you hand it over:  python3 .claude/hooks/pii_guard.py --check <file.py|file.sql> ...
+Test: python3 .claude/hooks/test_pii_guard.py
+"""
+
+from __future__ import annotations
+
+import ast
+import json
+import os
+import re
+import shlex
+import sys
+from pathlib import Path
+
+ROOT = Path(os.environ.get("CLAUDE_PROJECT_DIR") or Path(__file__).resolve().parents[2])
+SETTINGS = Path(__file__).resolve().parent / "pii-guard.json"
+
+DEFAULTS: dict = {
+    "personal_tables": {},
+    "personal_columns": [
+        "email",
+        "email_address",
+        "phone",
+        "phone_number",
+        "mobile",
+        "full_name",
+        "first_name",
+        "last_name",
+        "given_name",
+        "family_name",
+        "address",
+        "address_line1",
+        "address_line2",
+        "street",
+        "postal_code",
+        "date_of_birth",
+        "birth_date",
+        "dob",
+        "passport_number",
+        "national_id",
+        "tax_id",
+        "ip_address",
+    ],
+    "star_reads": "any",
+    "db_clients": ["psql", "pgcli", "mysql", "mariadb", "sqlite3", "duckdb", "usql", "clickhouse-client"],
+    "driver_markers": ["asyncpg", "psycopg", "sqlalchemy", "sqlite3", "pymysql", "mysql.connector", "duckdb", "pg8000"],
+    "dump_tools": {"pg_dump": ["-s", "--schema-only"], "mysqldump": ["-d", "--no-data"]},
+    "max_script_bytes": 1000000,
+}
+
+HOLE = "__hole__"
+KEYWORDS = frozenset(
+    "select from where join left right inner outer full cross natural on using group order by limit offset having "
+    "union intersect except returning set values as and or not null is in exists case when then else end distinct "
+    "all any some with recursive lateral only into update insert delete copy table to stdout stdin true false".split()
+)
+NAME = r"[a-z_][a-z0-9_$]*"
+QNAME = rf"{NAME}(?:\s*\.\s*{NAME})?"
+TABLE_REF = re.compile(
+    rf"\b(?:from|join|update|into|copy|table)\s+(?:only\s+)?({QNAME})(?:\s+(?:as\s+)?({NAME}))?"
+)
+LIST_END = re.compile(r"\b(?:from|where|group|order|limit|offset|having|union|intersect|except|into|window)\b")
+WHOLE_ROW_FN = re.compile(rf"\b(?:row_to_json|to_json|to_jsonb|json_agg|jsonb_agg|hstore|array_agg)\s*\(\s*({NAME})\s*\)")
+SQL_RUNNER = re.compile(r"\b\w*_to_xml\w*\s*\(|\bdblink\w*\s*\(")
+IDENT = re.compile(rf"(?<![a-z0-9_$.])(?:({NAME})\s*\.\s*)?({NAME})(?![a-z0-9_$])(?!\s*\()")
+SQLISH = re.compile(r"\b(?:select|returning|copy|table)\b", re.IGNORECASE)
+HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_]\w*)\1")
+SHELL_VAR = re.compile(r"(?<!\$)\$\{?[A-Za-z_]\w*\}?(?!\$)")
+PY_QUOTED = re.compile(r"('''|\"\"\"|'|\")((?:\\.|(?!\1).)*)\1", re.DOTALL)
+PY_HOLE = re.compile(r"\{[^{}]*\}|%\(?\w*\)?s")
+
+
+class Refused(Exception):
+    """A statement or a command the guard refuses; the message says why."""
+
+
+def load_settings(path: Path = SETTINGS) -> dict:
+    out = dict(DEFAULTS)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return out
+    if isinstance(data, dict):
+        for key, default in DEFAULTS.items():
+            if isinstance(data.get(key), type(default)):
+                out[key] = data[key]
+    return out
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# SQL reading
+
+
+def clean_sql(text: str) -> tuple[str, list[str]]:
+    """Lower-case SQL with comments dropped and literals blanked; also the dollar-quoted bodies, to read them too."""
+    out: list[str] = []
+    bodies: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if text.startswith("--", i):
+            j = text.find("\n", i)
+            i = n if j < 0 else j
+        elif text.startswith("/*", i):
+            depth, i = 1, i + 2
+            while i < n and depth:
+                if text.startswith("/*", i):
+                    depth, i = depth + 1, i + 2
+                elif text.startswith("*/", i):
+                    depth, i = depth - 1, i + 2
+                else:
+                    i += 1
+        elif c == "'":
+            i += 1
+            while i < n and not (text[i] == "'" and not text.startswith("''", i)):
+                i += 2 if text.startswith("''", i) else 1
+            out.append("''")
+            i += 1
+        elif c == '"':
+            j = text.find('"', i + 1)
+            j = n if j < 0 else j
+            out.append(text[i + 1 : j].lower())
+            i = j + 1
+        elif c == "$" and (m := re.match(r"\$([A-Za-z_]\w*)?\$", text[i:])):
+            tag = m.group(0)
+            j = text.find(tag, i + len(tag))
+            j = n if j < 0 else j
+            bodies.append(text[i + len(tag) : j])
+            out.append("''")
+            i = j + len(tag)
+        else:
+            out.append(c.lower())
+            i += 1
+    return "".join(out), bodies
+
+
+def split_top(text: str) -> list[str]:
+    """Split on commas outside parentheses."""
+    parts, depth, start = [], 0, 0
+    for i, c in enumerate(text):
+        depth += c == "("
+        depth -= c == ")"
+        if c == "," and depth == 0:
+            parts.append(text[start:i])
+            start = i + 1
+    parts.append(text[start:])
+    return [p.strip() for p in parts if p.strip()]
+
+
+def output_lists(stmt: str) -> list[str]:
+    """The select lists (every SELECT, subqueries too) and RETURNING lists of one statement."""
+    lists = []
+    for m in re.finditer(r"\b(select|returning)\b", stmt):
+        start = m.end()
+        depth = 0
+        end = len(stmt)
+        for i in range(start, len(stmt)):
+            depth += stmt[i] == "("
+            depth -= stmt[i] == ")"
+            if depth < 0:
+                end = i
+                break
+            if depth == 0 and m.group(1) == "select" and LIST_END.match(stmt, i) and not stmt[i - 1 : i].isalnum():
+                end = i
+                break
+        lists.append(re.sub(r"^\s*(?:distinct(?:\s+on\s*\([^)]*\))?|all)\b", "", stmt[start:end]))
+    return lists
+
+
+class Rules:
+    def __init__(self, cfg: dict):
+        self.tables = {k.lower(): {c.lower() for c in v} for k, v in cfg["personal_tables"].items()}
+        self.columns = {c.lower() for c in cfg["personal_columns"]}
+        self.star_any = cfg["star_reads"] != "listed"
+
+    def personal_table(self, name: str) -> str | None:
+        name = re.sub(r"\s+", "", name)
+        for key in self.tables:
+            if name == key or name == key.split(".")[-1]:
+                return key
+        return None
+
+    def star_refused(self, table: str) -> bool:
+        return self.star_any or self.personal_table(table) is not None
+
+
+def check_statement(stmt: str, rules: Rules) -> None:
+    """Raise Refused when one cleaned statement would print personal data."""
+    if SQL_RUNNER.search(stmt):
+        raise Refused("an XML export or dblink function runs SQL text the guard cannot read")
+    refs: dict[str, str] = {}
+    for m in TABLE_REF.finditer(stmt):
+        table = re.sub(r"\s+", "", m.group(1))
+        if table in KEYWORDS:
+            continue
+        refs[table] = table
+        refs[table.split(".")[-1]] = table
+        if m.group(2) and m.group(2) not in KEYWORDS:
+            refs[m.group(2)] = table
+    tables = set(refs.values())
+    copy = re.search(rf"\bcopy\s+({QNAME})\s*(?:\([^)]*\)\s*)?to\b", stmt)
+    if copy and rules.star_refused(copy.group(1)):
+        raise Refused(f"COPY {copy.group(1)} TO prints whole rows")
+    table_cmd = re.match(rf"\s*table\s+(?:only\s+)?({QNAME})", stmt)
+    if table_cmd and rules.star_refused(table_cmd.group(1)):
+        raise Refused(f"TABLE {table_cmd.group(1)} prints whole rows")
+    for lst in output_lists(stmt):
+        for item in split_top(lst):
+            check_item(item, refs, tables, rules)
+
+
+def check_item(item: str, refs: dict[str, str], tables: set[str], rules: Rules) -> None:
+    item = re.sub(r"\bcount\s*\((?:[^()]|\([^()]*\))*\)", "0", item)
+    item = re.sub(rf"\b{QNAME}\s+is\s+(?:not\s+)?null\b", "0", item)
+    item = re.sub(rf"\bas\s+{NAME}\s*$", "", item).strip()
+    if item == "*":
+        if any(rules.star_refused(t) for t in tables) or (rules.star_any and not tables):
+            raise Refused("SELECT * prints every column")
+        return
+    if m := re.fullmatch(rf"({NAME})\s*\.\s*\*", item):
+        if rules.star_refused(refs.get(m.group(1), m.group(1))):
+            raise Refused(f"{m.group(1)}.* prints every column")
+        return
+    if HOLE in item and (rules.star_any or any(rules.personal_table(t) for t in tables)):
+        raise Refused("a select list filled at run time")
+    whole = [m.group(1) for m in WHOLE_ROW_FN.finditer(item)]
+    whole += re.findall(rf"\b({NAME})\s*::", item)
+    whole += [item] if re.fullmatch(NAME, item) else []
+    for name in whole:
+        if name in refs and rules.star_refused(refs[name]):
+            raise Refused(f"the whole row of {refs[name]}")
+    for m in IDENT.finditer(item):
+        qual, col = m.group(1), m.group(2)
+        if col in KEYWORDS or col == HOLE:
+            continue
+        if col in rules.columns:
+            raise Refused(f"personal column {col}")
+        owners = [refs.get(qual, qual)] if qual else list(tables)
+        for owner in owners:
+            key = rules.personal_table(owner)
+            if key and col in rules.tables[key]:
+                raise Refused(f"personal column {key}.{col}")
+
+
+def check_sql(text: str, rules: Rules, depth: int = 0) -> None:
+    if depth > 5 or not SQLISH.search(text):
+        return
+    cleaned, bodies = clean_sql(text)
+    for stmt in cleaned.split(";"):
+        if SQLISH.search(stmt):
+            check_statement(stmt, rules)
+    for body in bodies:
+        check_sql(body, rules, depth + 1)
+
+
+def python_strings(code: str) -> list[str]:
+    """String literals of Python code (f-string holes become a hole marker); the raw text when it does not parse."""
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError):
+        return [PY_HOLE.sub(HOLE, m.group(2)) for m in PY_QUOTED.finditer(code)]
+    out = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.JoinedStr):
+            parts = [v.value if isinstance(v, ast.Constant) else HOLE for v in node.values]
+            out.append("".join(str(p) for p in parts))
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            out.append(PY_HOLE.sub(HOLE, node.value))
+    return out
+
+
+def check_file(path: Path, rules: Rules, cfg: dict) -> None:
+    try:
+        if path.stat().st_size > int(cfg["max_script_bytes"]):
+            raise Refused(f"{path.name} is too large to read")
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        raise Refused(f"cannot read {path.name} to check it ({type(e).__name__})") from e
+    texts = python_strings(text) if path.suffix == ".py" else [text]
+    for t in texts:
+        check_sql(t, rules)
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Shell reading
+
+
+def split_heredocs(command: str) -> tuple[str, list[str]]:
+    """The command without heredoc bodies, and the bodies."""
+    lines = command.split("\n")
+    rest, bodies, i = [], [], 0
+    while i < len(lines):
+        line = lines[i]
+        rest.append(line)
+        i += 1
+        for m in HEREDOC.finditer(line):
+            body = []
+            while i < len(lines) and lines[i].strip() != m.group(2):
+                body.append(lines[i])
+                i += 1
+            i += 1
+            bodies.append("\n".join(body))
+    return "\n".join(rest), bodies
+
+
+def words_of(text: str) -> list[str]:
+    try:
+        lexer = shlex.shlex(text, posix=True, punctuation_chars=";&|<>()")
+        lexer.whitespace_split = True
+        return list(lexer)
+    except ValueError:
+        return text.split()
+
+
+SHELLS = frozenset({"bash", "sh", "zsh", "dash"})
+
+
+def check_command(command: str, cfg: dict, cwd: Path = ROOT, depth: int = 0) -> None:
+    """Raise Refused when the shell command would print personal data."""
+    rules = Rules(cfg)
+    rest, bodies = split_heredocs(command)
+    words = words_of(rest)
+    names = {os.path.basename(w) for w in words}
+    for i, w in enumerate(words[:-1]):  # `bash -c '<command>'`: read the inner command as a command
+        if depth < 3 and w == "-c" and i > 0 and os.path.basename(words[i - 1]) in SHELLS:
+            check_command(words[i + 1], cfg, cwd, depth + 1)
+    for tool, flags in cfg["dump_tools"].items():
+        if tool in names and not any(f in words for f in flags):
+            raise Refused(f"{tool} without {' / '.join(flags)} dumps rows")
+    markers = cfg["driver_markers"]
+    client = bool(names & set(cfg["db_clients"]))
+    pythons = [i for i, w in enumerate(words) if re.fullmatch(r"python(?:3(?:\.\d+)?)?", os.path.basename(w))]
+    driver_text = any(m in command for m in markers)
+    if not (client or driver_text or pythons):
+        return
+    for i, w in enumerate(words):
+        target = None
+        if client and w.startswith("--file="):
+            target = w.split("=", 1)[1]
+        elif client and w in ("-f", "--file", "<") and i + 1 < len(words):
+            target = words[i + 1]
+        elif client and w.endswith(".sql"):  # `cat q.sql | <client>` and the like
+            target = w
+        if target:
+            check_file((cwd / target) if not os.path.isabs(target) else Path(target), rules, cfg)
+    for i in pythons:
+        script = next((x for x in words[i + 1 :] if not x.startswith("-")), None)
+        if script and script.endswith(".py") and "-c" not in words[i + 1 : i + 2]:
+            path = (cwd / script) if not os.path.isabs(script) else Path(script)
+            if path.is_file():
+                if any(m in path.read_text(encoding="utf-8", errors="replace") for m in markers):
+                    check_file(path, rules, cfg)
+            elif client or driver_text:
+                raise Refused(f"cannot read {script} to check it (write the script in one call, run it in the next)")
+    if not (client or driver_text):
+        return
+    for text in [*words, *bodies]:
+        sources = python_strings(text) if any(m in text for m in markers) else [SHELL_VAR.sub(HOLE, text)]
+        for s in sources:
+            check_sql(s, rules)
+
+
+def decide(command: str, cfg: dict, cwd: Path = ROOT) -> str | None:
+    """The refusal message, or None."""
+    try:
+        check_command(command, cfg, cwd)
+    except Refused as e:
+        return (
+            f"pii-guard: refused ({e}). Agents never print personal data. Read counts or aggregates "
+            "(count(col), col IS NULL) or name columns that are not personal. If a table or column is listed by "
+            "mistake, change .claude/hooks/pii-guard.json in a reviewed PR."
+        )
+    return None
+
+
+def main(argv: list[str]) -> int:
+    cfg = load_settings()
+    if argv[:1] == ["--check"]:
+        bad = 0
+        for name in argv[1:]:
+            try:
+                check_file(Path(name), Rules(cfg), cfg)
+                print(f"ok    {name}")
+            except Refused as e:
+                print(f"FAIL  {name}: {e}")
+                bad += 1
+        return 2 if bad else 0
+    try:
+        data = json.loads(sys.stdin.read())
+        command = str(((data or {}).get("tool_input") or {}).get("command") or "")
+    except (json.JSONDecodeError, AttributeError):
+        return 0
+    cwd = Path(str(data.get("cwd") or ROOT))
+    try:
+        message = decide(command, cfg, cwd)
+    except Exception as e:  # noqa: BLE001 - fail closed only for database commands
+        names = {os.path.basename(w) for w in command.split()}
+        if names & set(cfg["db_clients"]) or any(m in command for m in cfg["driver_markers"]):
+            print(f"pii-guard: internal error {type(e).__name__}; a database command is refused", file=sys.stderr)
+            return 2
+        return 0
+    if message:
+        print(message, file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

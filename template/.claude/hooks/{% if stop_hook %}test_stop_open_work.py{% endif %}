@@ -1,0 +1,144 @@
+"""Red-team tests of the stop hook: it refuses an early stop and lets a real question, a blocked item or a second stop
+through. Run: python3 .claude/hooks/test_stop_open_work.py
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import stop_open_work as hook  # noqa: E402
+
+CHECKLIST = """# S012 checklist
+
+- [x] Read the plan
+- [ ] Add the export button to the report page
+- [ ] Deploy the API [blocked: the tech lead approves the migration]
+- [ ] Rerun the smoke test after the deploy
+- [ ] Write the session log
+"""
+
+
+class Fixture(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        (self.root / ".tmp-session").mkdir()
+        self.checklist = self.root / ".tmp-session" / "S012-checklist.md"
+        self.checklist.write_text(CHECKLIST, encoding="utf-8")
+        self.cfg = hook.load_settings(HERE / "stop-open-work.json")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def check(self, message: str, **extra) -> str | None:
+        return hook.check({"last_assistant_message": message, **extra}, root=self.root, cfg=self.cfg)
+
+
+class RefusesEarlyStops(Fixture):
+    def test_summary_without_a_question_is_refused_with_the_unblocked_items(self):
+        reason = self.check("Done: the report query is faster and its tests pass.")
+        self.assertIsNotNone(reason)
+        self.assertIn("2 open item(s)", reason)
+        self.assertIn("Add the export button", reason)
+        self.assertIn("Write the session log", reason)
+        self.assertNotIn("Deploy the API", reason)  # blocked marker
+        self.assertNotIn("Rerun the smoke test", reason)  # waits on another step ("after")
+
+    def test_offers_to_go_on_or_to_stop_are_refused(self):
+        for msg in (
+            "The query is done.\n\nShall I continue with the export button?",
+            "Tests pass. Do you want me to keep going?",
+            "All green so far. Should we stop here?",
+            "Would you like me to proceed?",
+        ):
+            with self.subTest(msg=msg):
+                self.assertIsNotNone(self.check(msg))
+
+    def test_reads_the_transcript_when_the_message_is_not_in_the_input(self):
+        transcript = self.root / "t.jsonl"
+        rows = [
+            {"type": "user", "message": {"content": "go"}},
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "Finished the first step."}]}},
+        ]
+        transcript.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+        self.assertIsNotNone(hook.check({"transcript_path": str(transcript)}, root=self.root, cfg=self.cfg))
+
+
+class LetsTheStopThrough(Fixture):
+    def test_a_real_question_goes_through(self):
+        self.assertIsNone(self.check("Which date format should the export use, ISO or the local one?"))
+
+    def test_an_offer_next_to_a_real_question_goes_through(self):
+        self.assertIsNone(self.check("Should the export include archived rows? Shall I continue after that?"))
+
+    def test_approval_or_cost_context_goes_through(self):
+        for msg in (
+            "The batch run of 40 items costs about $3.\n\nShall I continue?",
+            "The DRY RUN found 12 rows to delete. Shall I continue?",
+            "This needs your approval before I merge. Shall I continue?",
+        ):
+            with self.subTest(msg=msg):
+                self.assertIsNone(self.check(msg))
+
+    def test_second_stop_of_the_same_turn_goes_through(self):
+        self.assertIsNone(self.check("Done for now.", stop_hook_active=True))
+
+    def test_only_blocked_items_left(self):
+        self.checklist.write_text("- [x] one\n- [ ] two [blocked: waits on the vendor]\n", encoding="utf-8")
+        self.assertIsNone(self.check("Done for now."))
+
+    def test_old_or_missing_checklist(self):
+        old = time.time() - 3 * 24 * 3600
+        os.utime(self.checklist, (old, old))
+        self.assertIsNone(self.check("Done for now."))
+        self.checklist.unlink()
+        self.assertIsNone(self.check("Done for now."))
+
+    def test_newest_checklist_wins(self):
+        newer = self.root / ".tmp-session" / "S013-checklist.md"
+        newer.write_text("- [x] all done\n", encoding="utf-8")
+        later = time.time() + 5
+        os.utime(newer, (later, later))
+        self.assertIsNone(self.check("Done for now."))
+
+
+class SettingsAndProcess(Fixture):
+    def test_settings_file_overrides_and_bad_values_fall_back(self):
+        path = self.root / "s.json"
+        path.write_text(json.dumps({"open_work_files": ["todo.md"], "max_age_hours": "soon"}), encoding="utf-8")
+        cfg = hook.load_settings(path)
+        self.assertEqual(cfg["open_work_files"], ["todo.md"])
+        self.assertEqual(cfg["max_age_hours"], hook.DEFAULTS["max_age_hours"])
+        path.write_text("not json", encoding="utf-8")
+        self.assertEqual(hook.load_settings(path), hook.DEFAULTS)
+
+    def test_shipped_settings_equal_the_defaults(self):
+        shipped = json.loads((HERE / "stop-open-work.json").read_text(encoding="utf-8"))
+        shipped.pop("_comment", None)
+        self.assertEqual(shipped, hook.DEFAULTS)
+
+    def run_hook(self, stdin: str) -> subprocess.CompletedProcess:
+        env = {**os.environ, "CLAUDE_PROJECT_DIR": str(self.root)}
+        return subprocess.run(
+            ["bash", str(HERE / "stop-open-work.sh")], input=stdin, capture_output=True, text=True, env=env
+        )
+
+    def test_wrapper_exit_codes(self):
+        refused = self.run_hook(json.dumps({"last_assistant_message": "Done."}))
+        self.assertEqual(refused.returncode, 2, refused.stderr)
+        self.assertIn("Not yet", refused.stderr)
+        self.assertEqual(self.run_hook("not json").returncode, 0)
+        self.assertEqual(self.run_hook(json.dumps({"stop_hook_active": True})).returncode, 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

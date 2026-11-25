@@ -1,0 +1,5 @@
+#!/bin/bash
+# Personal-data guard for the Bash tool (PreToolUse hook): refuses a command whose SQL would print personal columns
+# or whole rows. How it decides: pii_guard.py; what is personal: pii-guard.json.
+# Test: python3 .claude/hooks/test_pii_guard.py
+exec python3 "$(dirname "$0")/pii_guard.py"

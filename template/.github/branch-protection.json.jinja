@@ -6,7 +6,8 @@
       "API tests",{% endif %}{% if has_web %}
       "Web typecheck and build",{% endif %}{% if has_db %}
       "Migrations apply on an empty database",{% endif %}{% if has_lambda %}
-      "Lambda tests",{% endif %}
+      "Lambda tests",{% endif %}{% if has_api_contract %}
+      "OpenAPI breaking changes",{% endif %}
       "PR title",
       "Docs lint",
       "gitleaks",

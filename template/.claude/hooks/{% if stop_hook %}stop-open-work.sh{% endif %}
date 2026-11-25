@@ -1,0 +1,5 @@
+#!/bin/bash
+# Stop hook: refuses once to end the turn while the open-work file (.tmp-session/S<nnn>-checklist.md by default) lists
+# unblocked items and the last message asks the user nothing. How it decides: stop_open_work.py; settings:
+# stop-open-work.json. Test: python3 .claude/hooks/test_stop_open_work.py
+exec python3 "$(dirname "$0")/stop_open_work.py"

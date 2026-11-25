@@ -1,0 +1,174 @@
+"""Red-team tests of the personal-data guard. Invented tables only: shop.customer (personal) and shop.product.
+Run: python3 .claude/hooks/test_pii_guard.py
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import pii_guard as guard  # noqa: E402
+
+CFG = {**guard.DEFAULTS, "personal_tables": {"shop.customer": ["nickname", "loyalty_card"]}}
+LISTED = {**CFG, "star_reads": "listed"}
+
+
+class Base(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.cwd = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def refused(self, command: str, cfg: dict = CFG) -> bool:
+        return guard.decide(command, cfg, self.cwd) is not None
+
+    def assertRefused(self, *commands: str, cfg: dict = CFG):
+        for c in commands:
+            with self.subTest(command=c):
+                self.assertTrue(self.refused(c, cfg), c)
+
+    def assertPasses(self, *commands: str, cfg: dict = CFG):
+        for c in commands:
+            with self.subTest(command=c):
+                self.assertIsNone(guard.decide(c, cfg, self.cwd), c)
+
+
+class ClientCommands(Base):
+    def test_personal_columns_are_refused(self):
+        self.assertRefused(
+            "psql -c 'select id, email from shop.customer'",
+            'psql "$DSN" -c "SELECT c.EMAIL FROM shop.customer c"',
+            "psql -c 'select lower(email) from shop.customer'",
+            "psql -c \"select string_agg(email, ',') from shop.customer\"",
+            "psql -c 'select nickname from shop.customer'",  # listed column of a personal table
+            "psql -c 'select c.loyalty_card from shop.customer c'",
+            "psql -c 'select email as e from shop.customer'",
+            "psql -c 'select id from (select email from shop.customer) x'",
+            "psql -c 'update shop.customer set nickname = null returning nickname'",
+            'psql -c "select /* id */ email from shop.customer"',
+            "psql -c \"select '--', email from shop.customer\"",  # a literal cannot hide the rest
+        )
+
+    def test_star_whole_row_and_copy_reads_are_refused(self):
+        self.assertRefused(
+            "psql -c 'select * from shop.customer'",
+            "psql -c 'select c.* from shop.customer c'",
+            "psql -c 'select row_to_json(c) from shop.customer c'",
+            "psql -c 'select c::text from shop.customer c'",
+            "psql -c 'select c from shop.customer c'",
+            "psql -c 'copy shop.customer to stdout'",
+            "psql -c '\\copy shop.customer to out.csv csv'",
+            "psql -c 'table shop.customer'",
+            "psql -c 'select * from shop.product'",  # star_reads "any": every table
+            "psql -c 'select query_to_xml($$select 1$$, true, true, $$$$)'",
+        )
+
+    def test_counts_filters_and_plain_columns_pass(self):
+        self.assertPasses(
+            "psql -c 'select count(*) from shop.customer'",
+            "psql -c 'select count(email) from shop.customer where email is not null'",
+            "psql -c 'select id, created_at from shop.customer where email = $$x$$ order by email'",
+            "psql -c 'select email is null as missing, count(*) from shop.customer group by 1'",
+            "psql -c 'select p.title, p.price * 2 from shop.product p'",
+            "psql -c 'insert into shop.customer (email) values (null)'",
+            "psql -c 'copy shop.product (title) from stdin'",
+            "psql -c 'select count(*) as email from shop.customer'",
+        )
+
+    def test_listed_mode_allows_star_on_other_tables(self):
+        self.assertPasses("psql -c 'select * from shop.product'", cfg=LISTED)
+        self.assertRefused("psql -c 'select * from shop.customer'", "psql -c 'select email from shop.product'", cfg=LISTED)
+
+    def test_heredoc_and_sql_files(self):
+        self.assertRefused("psql <<'SQL'\nselect id,\n  email\nfrom shop.customer;\nSQL")
+        (self.cwd / "ok.sql").write_text("select count(*) from shop.customer;\n", encoding="utf-8")
+        (self.cwd / "bad.sql").write_text("select phone from shop.customer;\n", encoding="utf-8")
+        self.assertPasses("psql -f ok.sql", "psql < ok.sql", "psql --file=ok.sql")
+        self.assertRefused("psql -f bad.sql", "psql < bad.sql", "psql -f missing.sql", "cat bad.sql | psql appdb")
+        self.assertPasses("cat ok.sql | psql appdb")
+
+    def test_shell_wrappers_are_read(self):
+        self.assertRefused(
+            "bash -c \"psql -c 'select email from shop.customer'\"",
+            "docker compose exec db psql -U app -c 'select email from shop.customer' | head",
+            "PGOPTIONS=-q psql -c 'select * from shop.customer'",
+        )
+
+    def test_dollar_quoted_bodies_are_read(self):
+        self.assertRefused("psql -c 'do $$ begin perform email from shop.customer; raise notice $q$%$q$, (select email from shop.customer limit 1); end $$'")
+
+    def test_dumps(self):
+        self.assertRefused("pg_dump -t shop.customer appdb", "mysqldump appdb")
+        self.assertPasses("pg_dump --schema-only appdb", "mysqldump --no-data appdb")
+
+
+class PythonScripts(Base):
+    def test_inline_python_with_a_driver(self):
+        self.assertRefused(
+            "python3 -c \"import asyncpg; print(await c.fetch('select email from shop.customer'))\"",
+            'python3 -c "import psycopg; cur.execute(f\'select {cols} from shop.customer\')"',
+        )
+        self.assertPasses("python3 -c \"import asyncpg; print(await c.fetchval('select count(*) from shop.customer'))\"")
+
+    def test_script_files(self):
+        (self.cwd / "bad.py").write_text(
+            'import asyncpg\nQ = ("select id, "\n     "phone_number from shop.customer")\n', encoding="utf-8"
+        )
+        (self.cwd / "ok.py").write_text('import asyncpg\nQ = "select count(*) from shop.customer"\n', encoding="utf-8")
+        (self.cwd / "plain.py").write_text('print("select email from a form")\n', encoding="utf-8")
+        self.assertRefused("python3 bad.py", "cd . && python3 bad.py --limit 3")
+        self.assertPasses("python3 ok.py", "python3 plain.py", "python3 -m pytest -q")
+        self.assertEqual(guard.main(["--check", str(self.cwd / "ok.py")]), 0)
+        self.assertEqual(guard.main(["--check", str(self.cwd / "bad.py")]), 2)
+
+    def test_unreadable_script_of_a_database_command_is_refused(self):
+        self.assertRefused("cat > new.py <<'EOF'\nimport asyncpg\nEOF\npython3 new.py")
+        self.assertPasses("python3 missing.py")  # not a database command
+
+
+class OtherCommands(Base):
+    def test_commands_without_a_database_pass(self):
+        self.assertPasses(
+            "grep -rn email api/",
+            "git commit -m 'select email from the form'",
+            "echo 'select * from shop.customer'",
+            "ls -la",
+        )
+
+
+class Settings(Base):
+    def test_shipped_settings_equal_the_defaults(self):
+        shipped = json.loads((HERE / "pii-guard.json").read_text(encoding="utf-8"))
+        shipped.pop("_comment", None)
+        self.assertEqual(shipped, guard.DEFAULTS)
+
+    def test_bad_settings_fall_back(self):
+        path = self.cwd / "s.json"
+        path.write_text(json.dumps({"personal_tables": ["not", "a", "map"], "star_reads": "listed"}), encoding="utf-8")
+        cfg = guard.load_settings(path)
+        self.assertEqual(cfg["personal_tables"], {})
+        self.assertEqual(cfg["star_reads"], "listed")
+
+    def test_wrapper_exit_codes(self):
+        env = {**os.environ, "CLAUDE_PROJECT_DIR": str(self.cwd)}
+
+        def run(payload: str) -> int:
+            p = subprocess.run(["bash", str(HERE / "pii-guard.sh")], input=payload, text=True, capture_output=True, env=env)
+            return p.returncode
+
+        self.assertEqual(run(json.dumps({"tool_input": {"command": "psql -c 'select email from shop.customer'"}})), 2)
+        self.assertEqual(run(json.dumps({"tool_input": {"command": "ls"}})), 0)
+        self.assertEqual(run("not json"), 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

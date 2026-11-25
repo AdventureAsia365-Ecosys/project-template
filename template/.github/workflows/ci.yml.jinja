@@ -37,6 +37,16 @@ jobs:
           bash .claude/hooks/test_subagent_mcp_guardrails.sh
           python3 .claude/hooks/test_shell_guard_core.py
           python3 .claude/hooks/test_settings_hooks.py
+{%- if stop_hook %}
+          python3 .claude/hooks/test_stop_open_work.py
+{%- endif %}
+{%- if pii_guard %}
+          python3 .claude/hooks/test_pii_guard.py
+{%- endif %}
+{%- if has_api_contract %}
+      - name: API contract script tests
+        run: python3 .github/scripts/test_openapi_breaking.py
+{%- endif %}
 {%- if has_api %}
 
   api:

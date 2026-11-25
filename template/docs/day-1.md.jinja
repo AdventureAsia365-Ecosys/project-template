@@ -18,11 +18,11 @@ its evidence. The 30 / 60 / 90-day plan is in the same playbook page.
 | 7 | No database in this repo: mark not applicable | Orchestrator agent | n/a | [ ] |
 {%- endif %}
 {%- if has_api %}
-| 8 | Deploy the skeleton to Dev; `/health` returns the commit SHA | Orchestrator agent | `curl <api>/health` output with the SHA | [ ] |
+| 8 | Deploy the skeleton to Dev; `/health` returns the commit SHA{% if has_ui_smoke %}; run the UI smoke workflow on the web URL{% endif %} | Orchestrator agent | `curl <api>/health` output with the SHA{% if has_ui_smoke %}; the UI smoke run{% endif %} | [ ] |
 {%- else %}
-| 8 | Deploy the skeleton to Dev and check it answers | Orchestrator agent | The check's output | [ ] |
+| 8 | Deploy the skeleton to Dev and check it answers{% if has_ui_smoke %}; run the UI smoke workflow on the web URL{% endif %} | Orchestrator agent | The check's output{% if has_ui_smoke %}; the UI smoke run{% endif %} | [ ] |
 {%- endif %}
-| 9 | Fill the risk register, the cost sheet and the secrets register (names only) | Orchestrator agent | `docs/risk-register.md`, `docs/cost-sheet.md`, [`security/secrets-register.md`](security/secrets-register.md) | [ ] |
+| 9 | Fill the risk register, the cost sheet and the secrets register (names only){% if pii_guard %}; list the personal tables and columns in `.claude/hooks/pii-guard.json`{% endif %} | Orchestrator agent | `docs/risk-register.md`, `docs/cost-sheet.md`, [`security/secrets-register.md`](security/secrets-register.md){% if pii_guard %}, `.claude/hooks/pii-guard.json`{% endif %} | [ ] |
 | 10 | Run the first session close: snapshot, session log, lessons file in use | Orchestrator agent | `docs/sessions/<date>-day-1.md` | [ ] |
 
 ## Step 2 in commands
@@ -36,7 +36,7 @@ gh repo create <org>/{{ project_slug }} --private --source . --push
 gh api -X PUT repos/<org>/{{ project_slug }}/branches/{{ default_branch }}/protection --input .github/branch-protection.json
 ```
 
-`.github/branch-protection.json` requires the checks every PR runs (CI, PR title, docs lint, secret scan, workflow
+`.github/branch-protection.json` requires the checks every PR runs (CI, PR title, docs lint, secret scan,{% if has_api_contract %} API contract,{% endif %} workflow
 lint) and a linear history. Open an empty PR next (`git switch -c chore/first-pr && git commit --allow-empty -m "chore: first PR" && git push -u origin HEAD && gh pr create --fill`):
 every check must be green on it before feature work starts.
 {%- if has_web %}

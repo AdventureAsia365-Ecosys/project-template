@@ -6,7 +6,9 @@ name: Kit CI
 #   - leak scans: resource-ID lint (error mode) and the denylist scan (Actions variable LEAK_DENYLIST, one regex per
 #     line, kept out of this public repo) over the files and over the commit metadata of the whole history (author,
 #     committer, message: a file scan cannot see them); links; Markdown style;
-#   - render: generate the template with four answer sets and run each generated project's checks.
+#   - render: generate the template with five answer sets and run each generated project's checks (the optional parts
+#     exactly when their question is on, the API contract gate with a real oasdiff), then `copier update` a project
+#     generated from the previous release to this tree with no conflict.
 # Secrets: none. Actions pinned by commit SHA. Cost: free standard runners on a public repo.
 on:
   pull_request:
@@ -24,6 +26,10 @@ env:
   COPIER_VERSION: 9.19.1
   ACTIONLINT_VERSION: 1.7.7
   ACTIONLINT_SHA256: 023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
+  OASDIFF_VERSION: 1.33.0
+  OASDIFF_SHA256: 43a4e328e2d13ba1552d760aa68d2485c75c5621f309f6ff64ae895188345247
+  # The release a generated project is updated from in the render job (the latest tag before this one).
+  UPDATE_FROM: v1.0.0
 
 jobs:
   tools:
@@ -107,7 +113,7 @@ jobs:
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_wrapper: false
-      - name: Install copier, the API test dependencies and actionlint (pinned)
+      - name: Install copier, the API test dependencies, actionlint and oasdiff (pinned)
         run: |
           python -m pip install "copier==${COPIER_VERSION}"
           python -m venv /tmp/apivenv
@@ -115,10 +121,14 @@ jobs:
           curl -sSfL -o al.tgz "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
           echo "${ACTIONLINT_SHA256}  al.tgz" | sha256sum -c -
           tar -xzf al.tgz -C /tmp actionlint && rm al.tgz
+          curl -sSfL -o od.tgz "https://github.com/oasdiff/oasdiff/releases/download/v${OASDIFF_VERSION}/oasdiff_${OASDIFF_VERSION}_linux_amd64.tar.gz"
+          echo "${OASDIFF_SHA256}  od.tgz" | sha256sum -c -
+          tar -xzf od.tgz -C /tmp oasdiff && rm od.tgz
       - name: Render and check every variant
         run: |
           git config --global user.name ci && git config --global user.email ci@localhost
-          python3 tests/render_matrix.py --venv /tmp/apivenv --actionlint /tmp/actionlint --markdownlint
+          python3 tests/render_matrix.py --venv /tmp/apivenv --actionlint /tmp/actionlint --markdownlint \
+            --oasdiff /tmp/oasdiff --update-from "$UPDATE_FROM"
 
   workflows:
     name: Workflow lint

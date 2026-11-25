@@ -29,3 +29,6 @@ crash.log
 !.env.example
 .tmp-session/
 .DS_Store
+
+# UI smoke output
+e2e/results/

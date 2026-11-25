@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "test": "node --test --experimental-strip-types lib/*.test.ts"
+    "test": "node --test --experimental-strip-types lib/*.test.ts"{% if ui_smoke %},
+    "smoke": "playwright test"{% endif %}
   },
   "dependencies": {
     "next": "16.4.2",
@@ -15,6 +16,9 @@
     "react-dom": "19.2.4"
   },
   "devDependencies": {
+{%- if ui_smoke %}
+    "@playwright/test": "1.64.1",
+{%- endif %}
     "@types/node": "22.20.5",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",

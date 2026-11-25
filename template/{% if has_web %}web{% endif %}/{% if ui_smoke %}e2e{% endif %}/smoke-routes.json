@@ -1,0 +1,8 @@
+{
+  "_comment": "Routes the UI smoke opens on a deployed URL (.github/workflows/ui-smoke.yml). path: a path on the same host; selector (optional): a CSS selector that must be visible. timeout_ms: the time one route may take. Add a row for each page a user lands on; pages behind sign-in need a test account first (AGENTS.md, Sign-in for automated checks).",
+  "timeout_ms": 30000,
+  "routes": [
+    { "path": "/", "selector": "main" },
+    { "path": "/api/health" }
+  ]
+}
