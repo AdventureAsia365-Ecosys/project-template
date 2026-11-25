@@ -9,7 +9,9 @@ name: Kit CI
 #   - render: generate the template with five answer sets and run each generated project's checks (the optional parts
 #     exactly when their question is on, the API contract gate with a real oasdiff, the migrations and the API
 #     integration tests on a throwaway Postgres service), then `copier update` a project generated from the previous
-#     release to this tree with no conflict.
+#     release to this tree with no conflict;
+#   - web end to end: generate the defaults, install and build the web app, start it and play the UAT harness's example
+#     scenario against it (the UI kit gallery: paging, drawer, toast, tabs) with a video, plus a scenario that must fail.
 # Secrets: none. Actions pinned by commit SHA. Cost: free standard runners on a public repo.
 on:
   pull_request:
@@ -30,7 +32,9 @@ env:
   OASDIFF_VERSION: 1.33.0
   OASDIFF_SHA256: 43a4e328e2d13ba1552d760aa68d2485c75c5621f309f6ff64ae895188345247
   # The release a generated project is updated from in the render job (the latest tag before this one).
-  UPDATE_FROM: v1.1.0
+  UPDATE_FROM: v1.2.0
+  # Playwright of the web end-to-end job: the pin of tools/uat/package.json and of the UI smoke (tests check they agree).
+  PLAYWRIGHT_VERSION: 1.64.1
 
 jobs:
   tools:
@@ -139,6 +143,30 @@ jobs:
           python3 tests/render_matrix.py --venv /tmp/apivenv --actionlint /tmp/actionlint --markdownlint \
             --oasdiff /tmp/oasdiff --update-from "$UPDATE_FROM" \
             --pg-dsn postgresql://postgres:postgres@localhost:5432/postgres
+
+  web-e2e:
+    name: Web kit and UAT end to end
+    # Pinned image: a new ubuntu-latest can arrive before Playwright supports browsers on it.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - name: Install copier and Playwright's Chromium (pinned)
+        run: |
+          python -m pip install "copier==${COPIER_VERSION}"
+          npx --yes "playwright@${PLAYWRIGHT_VERSION}" install --with-deps chromium
+      - name: Render the defaults, build and start the web app, play the UAT scenarios
+        run: |
+          git config --global user.name ci && git config --global user.email ci@localhost
+          python3 tests/render_matrix.py --variant defaults --web-e2e
 
   workflows:
     name: Workflow lint

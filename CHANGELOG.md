@@ -3,6 +3,45 @@
 All notable changes of the template. Written by release-please from the Conventional Commit titles merged to `main`
 ([`VERSIONING.md`](VERSIONING.md)).
 
+## 1.3.0 (2026-11-25)
+
+### Features
+
+- UI kit (Next.js web projects): shared components under `web/app/_kit/`, imported from `@/app/_kit`: neutral design
+  tokens for light and dark (no brand; `tokens.css`), `Button` and `ButtonLink`, `Table` with server paging (the page
+  reads `?page=` with `parsePage`, reads one page and the total; `pageHref` keeps the other query parameters),
+  `EmptyState`, `Drawer` (Escape, overlay click, focus in and back), `ToastProvider` with `useToast` (a polite live
+  region; error toasts stay until dismissed), `PageHeader`, link `Tabs` and a status `Badge`. Every HTML attribute
+  passes through, `data-testid` included. A gallery page at `/kit` shows each component with invented rows, and the
+  UI smoke route list opens it.
+- Kit lint (`web/lib/kitLint.ts`, run by `npm test`): a page or app component outside the kit fails on an inline
+  style, a stylesheet of its own, a class that is not a kit class, a raw `<button>`, `<table>` or `<dialog>`, or a
+  page that imports nothing from the kit; a real exception carries `kit-lint: ignore <rule>` with its reason.
+- UAT harness (web projects): `tools/uat/run.ts` plays JSON scenarios (`tools/uat/scenarios/`, format and checks in
+  `lib/scenario.ts`) in Playwright's Chromium against a running app: an action and at least one expectation per step
+  (visible, hidden, contains, count, URL), every wait capped by the scenario's `step_timeout_ms`, page and console
+  errors fail the step, a screenshot per step, an optional video (`--video`), WebVTT captions per step, the build's
+  commit from `/api/health`, and a report index (`tools/uat/out/index.html`) where a failing take is listed as FAIL.
+  One example scenario walks the UI kit gallery. Free local tools only; narration, when used, reads the captions with
+  a free local text-to-speech engine. `.github/workflows/uat.yml` runs it on a deployed URL on demand and keeps the
+  takes as a run artifact.
+- Generated CI: the web job runs the kit lint with the web unit tests and installs, typechecks and tests the UAT
+  harness; `scripts/pre-push.sh` runs the web unit tests, the kit lint and the harness tests when node is on the
+  path. Template CI: the render matrix checks the kit and the harness files against the stacks answer and runs their
+  tests per variant, and a new job builds and starts the generated web app and plays the example scenario (it must
+  pass, with its video, captions and index) and a scenario that must fail (exit 1, listed as FAIL).
+
+Every part of the kit design now ships, so this release has no "Not in this release" list.
+
+### Upgrade note
+
+`copier update` adds `web/app/_kit/`, the gallery `web/app/kit/`, `web/lib/kitLint.ts`, the UAT harness under
+`tools/uat/` and `.github/workflows/uat.yml`, and changes `web/app/layout.tsx` (imports the kit styles and the toast
+provider), `web/app/page.tsx`, `web/package.json` (the `test` script) and the UI smoke route list. A project that
+already built pages without the kit gets kit lint findings from `npm test`: move the page onto kit components, or
+mark a deliberate exception with `kit-lint: ignore <rule>` and its reason. The harness is a separate package: run
+`npm install` and `npm run browser` in `tools/uat/` once.
+
 ## 1.2.0 (2026-11-25)
 
 ### Features
