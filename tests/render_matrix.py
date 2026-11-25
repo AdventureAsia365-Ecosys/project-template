@@ -21,7 +21,8 @@ the optional parts off. For each one:
 The guardrail red-team scripts run once (first variant): they are byte copies and slow to start.
 --web-e2e: for the first variant with a web app, install and build it (npm, next build), start it, then install the
 UAT harness and play its example scenario against it with a video (the walk must pass, the take folder, captions and
-report index must be written), and play a scenario that must fail (exit 1, listed as FAIL). Needs node 22 and
+report index must be written; its test id checks prove the kit components pass attributes through), play a scenario
+that must fail (exit 1, listed as FAIL), and one whose value_env variable is unset (exit 2, no take). Needs node 22 and
 Playwright's Chromium (npx playwright install chromium). One next build at a time; NODE_OPTIONS caps its memory.
 --update-from <tag>: also generate the defaults from that release tag, add a page of the project's own that breaks the
 kit lint (an inline style), commit, `copier update` to the working tree and fail on any .rej file or conflict marker,
@@ -264,6 +265,16 @@ MUST_FAIL = {
     "steps": [{"caption": "Open the gallery", "action": {"goto": "/kit"}, "expect": [{"visible": {"text": "No such text"}}]}],
 }
 
+SECRET_UNSET = {
+    "title": "A walk whose secret is not set",
+    "viewport": {"width": 1024, "height": 700},
+    "step_timeout_ms": 2000,
+    "steps": [
+        {"caption": "Open the gallery", "action": {"goto": "/kit"}, "expect": [{"visible": {"role": "heading", "name": "UI kit"}}]},
+        {"caption": "Type a secret", "action": {"fill": {"label": "Code"}, "value_env": "UAT_E2E_UNSET"}, "expect": [{"url_contains": "/kit"}]},
+    ],
+}
+
 
 def wait_for_url(url: str, timeout_s: float) -> bool:
     deadline = time.monotonic() + timeout_s
@@ -327,6 +338,18 @@ def web_e2e(project: Path, port: int = 3917) -> list[tuple[str, bool, str]]:
         index = (out / "index.html").read_text(encoding="utf-8") if (out / "index.html").is_file() else ""
         failed_ok = p.returncode == 1 and '<span class="fail">FAIL</span>' in index
         results.append(("uat failing scenario exits 1 and is listed as FAIL", failed_ok, f"exit {p.returncode}"))
+        unset = uat / "scenarios" / "97-secret-unset.json"
+        unset.write_text(json.dumps(SECRET_UNSET), encoding="utf-8")
+        try:
+            env_unset = {k: v for k, v in env.items() if k != "UAT_E2E_UNSET"}
+            q = subprocess.run(
+                ["npm", "run", "--silent", "uat", "--", "--base-url", base, "--scenario", "97-secret-unset"],
+                cwd=uat, env=env_unset, capture_output=True, text=True,
+            )
+        finally:
+            unset.unlink()
+        unset_ok = q.returncode == 2 and "UAT_E2E_UNSET" in q.stderr and not list(out.glob("*-97-secret-unset"))
+        results.append(("uat value_env without its variable exits 2 before a take", unset_ok, f"exit {q.returncode}"))
     finally:
         os.killpg(server.pid, 15)
         server.wait(timeout=30)
