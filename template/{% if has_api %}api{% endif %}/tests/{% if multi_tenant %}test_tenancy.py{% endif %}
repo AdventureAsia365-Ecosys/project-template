@@ -1,0 +1,125 @@
+"""Tenant-scoped pool and fair-share job gate. Invented tenants only.
+The database tests skip without TEST_DATABASE_URL."""
+
+from __future__ import annotations
+
+import threading
+import uuid
+from datetime import UTC, datetime
+
+import pytest
+
+from app.jobs import DONE, PostgresJobStore
+from app.tenancy import NoTenantError, TenantScopedPool, tenant_uuid
+from app.wiring import ALL_SETTINGS, SCHEMA
+
+T0 = datetime(2030, 1, 1, tzinfo=UTC)
+TENANT_A = "00000000-0000-4000-8000-0000000000a1"
+TENANT_B = "00000000-0000-4000-8000-0000000000b2"
+
+
+@pytest.mark.parametrize("bad", [None, "", "   ", "not-a-uuid", 42])
+def test_a_query_without_a_valid_tenant_is_refused(bad):
+    with pytest.raises(NoTenantError):
+        tenant_uuid(bad)
+
+
+def test_tenant_ids_are_normalised():
+    assert tenant_uuid(TENANT_A.upper()) == uuid.UUID(TENANT_A)
+    assert tenant_uuid(uuid.UUID(TENANT_B)) == uuid.UUID(TENANT_B)
+
+
+def test_the_fair_share_limit_is_a_setting():
+    assert {s.key for s in ALL_SETTINGS} >= {"jobs.max_running_per_tenant"}
+
+
+def test_refused_before_a_connection_is_taken():
+    class NoPool:
+        def connection(self):
+            raise AssertionError("no connection may be taken without a tenant")
+
+    with pytest.raises(NoTenantError), TenantScopedPool(NoPool()).transaction(""):
+        pass
+
+
+def seed_tenants(pool) -> None:
+    with pool.connection() as conn:
+        conn.execute(
+            f"INSERT INTO {SCHEMA}.tenant (id, name) VALUES (%s, 'Tenant A'), (%s, 'Tenant B')", (TENANT_A, TENANT_B)
+        )
+
+
+def test_each_tenant_sees_only_its_rows(pool, app_role):
+    seed_tenants(pool)
+    scoped = TenantScopedPool(pool, role=app_role)
+    with scoped.transaction(TENANT_A) as conn:
+        conn.execute(f"INSERT INTO {SCHEMA}.tenant_note (tenant_id, body) VALUES (%s, 'note of A')", (TENANT_A,))
+    with scoped.transaction(TENANT_B) as conn:
+        assert conn.execute(f"SELECT count(*) AS n FROM {SCHEMA}.tenant_note").fetchone()[0] == 0
+        with pytest.raises(Exception, match="row-level security"):
+            conn.execute(f"INSERT INTO {SCHEMA}.tenant_note (tenant_id, body) VALUES (%s, 'forged')", (TENANT_A,))
+    with scoped.transaction(TENANT_A) as conn:
+        assert conn.execute(f"SELECT body FROM {SCHEMA}.tenant_note").fetchall() == [("note of A",)]
+
+
+def test_the_tenant_does_not_outlive_the_transaction(pool, app_role):
+    seed_tenants(pool)
+    with TenantScopedPool(pool, role=app_role).transaction(TENANT_A) as conn:
+        conn.execute(f"INSERT INTO {SCHEMA}.tenant_note (tenant_id, body) VALUES (%s, 'note of A')", (TENANT_A,))
+    with pool.connection() as conn:
+        assert conn.execute("SELECT coalesce(current_setting('app.tenant_id', true), '') AS t").fetchone()[0] == ""
+        conn.execute(f"SET ROLE {app_role}")
+        assert conn.execute(f"SELECT count(*) AS n FROM {SCHEMA}.tenant_note").fetchone()[0] == 0
+        conn.execute("RESET ROLE")
+
+
+def test_fair_share_claim_skips_a_busy_tenant(pool):
+    seed_tenants(pool)
+    store = PostgresJobStore(pool, SCHEMA, tenant_aware=True)
+    for n in (1, 2):
+        store.enqueue("work", {"n": n}, tenant_id=TENANT_A, run_after=T0)
+    store.enqueue("work", {"n": 3}, tenant_id=TENANT_B, run_after=T0)
+    first = store.claim(60, T0, per_tenant_limit=1)
+    second = store.claim(60, T0, per_tenant_limit=1)
+    assert (first.tenant_id, second.tenant_id) == (TENANT_A, TENANT_B)
+    assert store.claim(60, T0, per_tenant_limit=1) is None
+    store.finish(first, DONE)
+    assert store.claim(60, T0, per_tenant_limit=1).payload == {"n": 2}
+
+
+def test_parallel_workers_never_pass_the_limit(pool):
+    seed_tenants(pool)
+    store = PostgresJobStore(pool, SCHEMA, tenant_aware=True)
+    for n in range(6):
+        store.enqueue("work", {"n": n}, tenant_id=TENANT_A, run_after=T0)
+    claimed, start = [], threading.Barrier(4)
+
+    def worker() -> None:
+        start.wait()
+        job = store.claim(60, T0, per_tenant_limit=2)
+        if job is not None:
+            claimed.append(job.id)
+
+    threads = [threading.Thread(target=worker) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(claimed) == 2 and len(set(claimed)) == 2
+
+
+def test_idempotency_keys_are_scoped_to_the_tenant(pool):
+    seed_tenants(pool)
+    store = PostgresJobStore(pool, SCHEMA, tenant_aware=True)
+    a = store.enqueue("report", {"owner": "A"}, idempotency_key="report-2030-01", tenant_id=TENANT_A)
+    b = store.enqueue("report", {"owner": "B"}, idempotency_key="report-2030-01", tenant_id=TENANT_B)
+    assert a.id != b.id and (b.tenant_id, b.payload) == (TENANT_B, {"owner": "B"})
+    assert store.enqueue("report", {}, idempotency_key="report-2030-01", tenant_id=TENANT_B).id == b.id
+    untenanted = store.enqueue("report", {"owner": None}, idempotency_key="report-2030-01")
+    assert store.enqueue("report", {}, idempotency_key="report-2030-01").id == untenanted.id
+    assert store.busy_count(T0) == 3
+
+
+def test_a_tenant_job_needs_the_tenant_column(pool):
+    with pytest.raises(ValueError):
+        PostgresJobStore(pool, SCHEMA, tenant_aware=False).enqueue("work", {}, tenant_id=TENANT_A)

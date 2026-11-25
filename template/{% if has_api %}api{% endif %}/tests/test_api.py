@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from app.jobs import MemoryJobStore
 from app.main import create_app
 from app.settings_registry import MemorySettingsStore, SettingsRegistry
+from app.wiring import ALL_SETTINGS
 
 
 def client(role: str | None = None, **kw) -> TestClient:
@@ -46,10 +47,42 @@ def test_admin_settings_need_sign_in_and_the_admin_role():
 
 def test_admin_change_is_bounded_and_audited():
     store = MemorySettingsStore()
-    c = client(role="administrator", settings=SettingsRegistry(store))
+    c = client(role="administrator", settings=SettingsRegistry(store, ALL_SETTINGS))
     r = c.put("/admin/settings/jobs.max_attempts", json={"value": 5})
     assert r.status_code == 200
     assert r.json() == {"key": "jobs.max_attempts", "old": 3, "new": 5}
     assert store.audit[-1].changed_by == "administrator"
     assert c.put("/admin/settings/jobs.max_attempts", json={"value": 0}).status_code == 422
     assert c.put("/admin/settings/no.such.key", json={"value": 1}).status_code == 422
+
+
+class FakePool:
+    """Stands in for a psycopg pool: records open and close; every connection attempt fails."""
+
+    def __init__(self) -> None:
+        self.events: list[str] = []
+
+    def open(self) -> None:
+        self.events.append("open")
+
+    def close(self) -> None:
+        self.events.append("close")
+
+    def connection(self, timeout: float | None = None):
+        raise OSError("database unreachable")
+
+
+def test_a_pool_is_opened_closed_and_checked_for_readiness():
+    pool = FakePool()
+    with TestClient(create_app(pool=pool)) as c:
+        r = c.get("/health/ready")
+        assert r.status_code == 503 and r.json()["detail"] == {"failed": ["db"]}
+    assert pool.events == ["open", "close"]
+
+
+def test_pool_from_env_needs_the_database_url():
+    from app.wiring import pool_from_env
+
+    assert pool_from_env({}) is None
+    pool = pool_from_env({"DATABASE_URL": "postgresql://reader@db.invalid:5432/notes"})
+    assert pool is not None and pool.closed

@@ -13,13 +13,17 @@ the optional parts off. For each one:
   - the stack checks the variant has: API ruff + pytest (one shared virtualenv), Lambda tests, web unit tests
     (node --test, no install), terraform fmt, actionlint over the generated workflows and markdownlint (each when
     its tool is given), the new hooks' tests and the API contract gate (with a real oasdiff when one is given: the
-    exported document against itself passes, the same document with a route removed fails).
+    exported document against itself passes, the same document with a route removed fails);
+  - with --pg-dsn (a Postgres superuser URL): a fresh database per variant with a database, every migration applied
+    twice (the second run a no-op), the tenant isolation probe when it is there, and the API tests with
+    TEST_DATABASE_URL pointing at it, so the integration tests of the database stores, the tenant pool and the model
+    ledger run instead of skipping.
 The guardrail red-team scripts run once (first variant): they are byte copies and slow to start.
 --update-from <tag>: also generate the defaults from that release tag, commit, `copier update` to the working tree
 and fail on any .rej file or conflict marker (a minor release must update an untouched project cleanly).
 
 Usage: python3 tests/render_matrix.py [--variant NAME ...] [--keep DIR] [--venv DIR] [--actionlint BIN] [--markdownlint]
-       [--oasdiff BIN] [--update-from TAG]
+       [--oasdiff BIN] [--update-from TAG] [--pg-dsn URL]
 Exit 0 when every check of every variant passes.
 """
 
@@ -35,6 +39,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -90,14 +95,25 @@ API_CONTRACT = [
     "api/tests/test_openapi_export.py",
 ]
 UI_SMOKE = [".github/workflows/ui-smoke.yml", "web/e2e/smoke.spec.ts", "web/playwright.config.ts", "web/lib/smokeRoutes.ts"]
+DB_STORES = ["api/app/wiring.py", "api/tests/conftest.py", "api/tests/test_pg_stores.py"]
+TENANCY = ["api/app/tenancy.py", "api/tests/test_tenancy.py", "db/tests/isolation_probe.sql"]
+GATEWAY = ["api/app/gateway.py", "api/tests/test_gateway.py", "api/app/model_ledger.py"]
 EXPECT: dict[str, dict[str, bool]] = {
-    "defaults": {"stop": True, "pii": True, "api": True, "smoke": True},
-    "all-on": {"stop": True, "pii": True, "api": True, "smoke": True},
-    "root": {"stop": False, "pii": True, "api": False, "smoke": False},
-    "app": {"stop": True, "pii": False, "api": False, "smoke": False},
-    "web-off": {"stop": False, "pii": True, "api": False, "smoke": False},
+    "defaults": {"stop": True, "pii": True, "api": True, "smoke": True, "db": True, "tenant": False, "ai": False},
+    "all-on": {"stop": True, "pii": True, "api": True, "smoke": True, "db": True, "tenant": True, "ai": True},
+    "root": {"stop": False, "pii": True, "api": False, "smoke": False, "db": False, "tenant": False, "ai": False},
+    "app": {"stop": True, "pii": False, "api": False, "smoke": False, "db": True, "tenant": False, "ai": False},
+    "web-off": {"stop": False, "pii": True, "api": False, "smoke": False, "db": False, "tenant": False, "ai": False},
 }
-PARTS = {"stop": HOOK_STOP, "pii": HOOK_PII, "api": API_CONTRACT, "smoke": UI_SMOKE}
+PARTS = {
+    "stop": HOOK_STOP,
+    "pii": HOOK_PII,
+    "api": API_CONTRACT,
+    "smoke": UI_SMOKE,
+    "db": DB_STORES,
+    "tenant": TENANCY,
+    "ai": GATEWAY,
+}
 REGISTERED = {"stop": "stop-open-work.sh", "pii": "pii-guard.sh"}
 
 LEFTOVER = re.compile(r"(?<!\$)\{\{|\{%|%\}")
@@ -190,6 +206,30 @@ def oasdiff_check(project: Path, venv: Path, oasdiff: str) -> tuple[bool, str]:
         shutil.rmtree(work, ignore_errors=True)
 
 
+def pg_database(project: Path, variant: str, admin_url: str) -> tuple[bool, str, str | None]:
+    """A fresh database for the variant: every migration applied twice, then the isolation probe when it is there.
+    Returns (ok, message, URL of the database)."""
+    name = "render_" + variant.replace("-", "_")
+    parts = urlsplit(admin_url)
+    url = urlunsplit(parts._replace(path="/" + name))
+    psql = ["psql", "-X", "-q", "-v", "ON_ERROR_STOP=1"]
+    ok, msg = run(psql + ["-d", admin_url, "-c", f"DROP DATABASE IF EXISTS {name} WITH (FORCE)"], project)
+    ok = ok and run(psql + ["-d", admin_url, "-c", f"CREATE DATABASE {name}"], project)[0]
+    if not ok:
+        return False, f"create database: {msg}", None
+    files = sorted((project / "db" / "migrations").glob("*.sql"))
+    for f in files + files:
+        ok, msg = run(psql + ["-d", url, "-f", str(f)], project)
+        if not ok:
+            return False, f"{f.name}: {msg}", None
+    probe = project / "db" / "tests" / "isolation_probe.sql"
+    if probe.is_file():
+        ok, msg = run(psql + ["-d", url, "-f", str(probe)], project)
+        if not ok:
+            return False, f"isolation probe: {msg}", None
+    return True, f"{len(files)} migration(s) applied twice{', probe passed' if probe.is_file() else ''}", url
+
+
 def update_check(tag: str, dest: Path, copier: str) -> tuple[bool, str]:
     """Generate the defaults from <tag>, commit, update to the working tree: no .rej file, no conflict marker."""
     data = VARIANTS["defaults"]
@@ -274,6 +314,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--markdownlint", action="store_true", help="also run markdownlint-cli2 0.23.2 (npx) per variant")
     ap.add_argument("--oasdiff", help="oasdiff binary: run the API contract gate for real (needs --venv)")
     ap.add_argument("--update-from", help="release tag to update the defaults from (copier update, no conflict)")
+    ap.add_argument("--pg-dsn", help="Postgres superuser URL: run the migrations and the API integration tests")
     a = ap.parse_args(argv)
     base = a.keep or Path(tempfile.mkdtemp(prefix="render-matrix-"))
     failures = 0
@@ -301,6 +342,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[{name}] {'ok  ' if ok else 'FAIL'} api contract with oasdiff {msg}")
             failures += not ok
         env = dict(os.environ)
+        if a.pg_dsn and (dest / "db" / "migrations").is_dir():
+            ok, msg, url = pg_database(dest, name, a.pg_dsn)
+            print(f"[{name}] {'ok  ' if ok else 'FAIL'} migrations on Postgres {msg}")
+            failures += not ok
+            if url:
+                env["TEST_DATABASE_URL"] = url
         for label, cmd, cwd in checks(dest, i == 0, a.venv, a.actionlint, a.markdownlint):
             ok, msg = run(cmd, cwd, env)
             print(f"[{name}] {'ok  ' if ok else 'FAIL'} {label} {msg}")

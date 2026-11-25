@@ -23,7 +23,7 @@ An app repo of {{ project_name }}. The project's docs, decisions and playbook li
 |---|---|
 | `docs/` | Catalog, playbook, templates, decisions (`docs/adr/`), lessons, sessions |
 {%- if has_api %}
-| `api/` | Python API (FastAPI): `/health`, `/health/ready`, settings registry, job table and worker, deploy gate |
+| `api/` | Python API (FastAPI): `/health`, `/health/ready`, settings registry, job table and worker, deploy gate{% if multi_tenant %}, tenant-scoped connection pool{% endif %}{% if ai_features %}, model gateway{% endif %}; database stores when `DATABASE_URL` is set |
 | `db/migrations/` | SQL migrations, keys `{{ migration_prefix }}-NNN` |
 {%- endif %}
 {%- if has_web %}

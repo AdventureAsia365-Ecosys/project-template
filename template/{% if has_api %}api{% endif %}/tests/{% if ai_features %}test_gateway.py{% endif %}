@@ -1,0 +1,261 @@
+"""Model gateway core with fake providers: routing, fallback, spend caps (fail-closed), one ledger row per attempt, and
+the admin-edited routes (store, audit, admin endpoint). No model is called and no key is read. The database tests
+skip without TEST_DATABASE_URL."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.gateway import (
+    GATEWAY_SETTINGS,
+    CapExceeded,
+    FakeProvider,
+    FatalProviderError,
+    Gateway,
+    GatewayError,
+    MemoryRouteStore,
+    PostgresRouteStore,
+    Request,
+    RouteError,
+    Target,
+    month_start,
+    provider_cap,
+)
+from app.main import create_app
+from app.model_ledger import MemoryLedger, PostgresLedger, record_call
+from app.settings_registry import SETTINGS, MemorySettingsStore, SettingsRegistry
+from app.wiring import ALL_SETTINGS, SCHEMA, build_gateway
+
+NOW = datetime(2030, 3, 14, 9, 30, tzinfo=UTC)
+ASK = Request(prompt="Summarise the invented harbour schedule")
+ROUTES = {"writer": [Target("alpha", "alpha-large"), Target("beta", "beta-small")]}
+
+
+def settings(**values: int) -> SettingsRegistry:
+    defs = SETTINGS + GATEWAY_SETTINGS + (provider_cap("alpha"), provider_cap("beta"))
+    return SettingsRegistry(MemorySettingsStore(values=dict(values)), defs)
+
+
+def gateway(alpha: FakeProvider, beta: FakeProvider, ledger=None, **values: int) -> Gateway:
+    return Gateway([alpha, beta], ROUTES, ledger or MemoryLedger(), settings(**values), clock=lambda: NOW)
+
+
+def spent(ledger, provider: str, usd: float, at: datetime = NOW) -> None:
+    record_call(ledger, stage="earlier", role="writer", provider=provider, model="m", outcome="ok", cost_usd=usd, at=at)
+
+
+def test_the_first_target_answers_and_is_recorded_with_billed_fields():
+    alpha, beta, ledger = FakeProvider("alpha"), FakeProvider("beta"), MemoryLedger()
+    result = gateway(alpha, beta, ledger).generate("writer", "summary", ASK)
+    assert (result.provider, result.model, result.text) == ("alpha", "alpha-large", "[alpha] ok")
+    assert beta.calls == []
+    row = ledger.rows[-1]
+    assert (row["outcome"], row["stage"], row["role"], row["cost_usd"], row["output_tokens"]) == (
+        "ok",
+        "summary",
+        "writer",
+        0.01,
+        8,
+    )
+    assert row["created_at"] == NOW and row["latency_ms"] >= 0
+
+
+def test_a_failing_target_falls_back_to_the_next():
+    alpha = FakeProvider("alpha", script=[TimeoutError("slow upstream")])
+    beta, ledger = FakeProvider("beta"), MemoryLedger()
+    result = gateway(alpha, beta, ledger).generate("writer", "summary", ASK)
+    assert result.provider == "beta"
+    assert [(r["provider"], r["outcome"]) for r in ledger.rows] == [("alpha", "error"), ("beta", "ok")]
+    assert ledger.rows[0]["cost_usd"] == 0.0
+
+
+def test_every_target_failing_raises_with_the_reasons():
+    alpha = FakeProvider("alpha", script=[TimeoutError("slow")])
+    beta = FakeProvider("beta", script=[ConnectionError("down")])
+    with pytest.raises(GatewayError, match="TimeoutError.*ConnectionError"):
+        gateway(alpha, beta).generate("writer", "summary", ASK)
+
+
+def test_a_fatal_error_stops_the_chain():
+    alpha, beta = FakeProvider("alpha", script=[FatalProviderError("request too large")]), FakeProvider("beta")
+    with pytest.raises(FatalProviderError):
+        gateway(alpha, beta).generate("writer", "summary", ASK)
+    assert beta.calls == []
+
+
+def test_a_provider_over_its_cap_is_skipped_before_the_call():
+    alpha, beta, ledger = FakeProvider("alpha"), FakeProvider("beta"), MemoryLedger()
+    spent(ledger, "alpha", 10.0)  # alpha's default cap is 10 USD
+    result = gateway(alpha, beta, ledger).generate("writer", "summary", ASK)
+    assert result.provider == "beta" and alpha.calls == []
+    assert [(r["provider"], r["outcome"]) for r in ledger.rows[1:]] == [("alpha", "refused"), ("beta", "ok")]
+
+
+def test_the_estimate_counts_against_the_cap():
+    alpha, beta, ledger = FakeProvider("alpha", price_usd=0.5), FakeProvider("beta"), MemoryLedger()
+    spent(ledger, "alpha", 9.75)
+    assert gateway(alpha, beta, ledger).generate("writer", "summary", ASK).provider == "beta"
+
+
+def test_the_total_cap_refuses_every_provider():
+    alpha, beta, ledger = FakeProvider("alpha"), FakeProvider("beta"), MemoryLedger()
+    spent(ledger, "beta", 5.0)
+    with pytest.raises(CapExceeded):
+        gateway(alpha, beta, ledger, **{"ai.monthly_cap_usd": 5}).generate("writer", "summary", ASK)
+    assert alpha.calls == [] and beta.calls == [] and ledger.rows[-1]["outcome"] == "refused"
+
+
+def test_a_cap_of_zero_turns_a_provider_off():
+    alpha, beta = FakeProvider("alpha", price_usd=0.0), FakeProvider("beta")
+    result = gateway(alpha, beta, **{"ai.monthly_cap_usd.alpha": 0}).generate("writer", "summary", ASK)
+    assert result.provider == "beta"
+
+
+def test_last_month_does_not_count():
+    alpha, beta, ledger = FakeProvider("alpha"), FakeProvider("beta"), MemoryLedger()
+    spent(ledger, "alpha", 50.0, at=month_start(NOW) - timedelta(seconds=1))
+    assert gateway(alpha, beta, ledger).generate("writer", "summary", ASK).provider == "alpha"
+
+
+def test_no_spend_figure_means_no_call():
+    class BrokenLedger(MemoryLedger):
+        def month_spend(self, since, provider=None):
+            raise OSError("ledger unreachable")
+
+    alpha, beta = FakeProvider("alpha"), FakeProvider("beta")
+    with pytest.raises(GatewayError, match="no call made"):
+        gateway(alpha, beta, BrokenLedger()).generate("writer", "summary", ASK)
+    assert alpha.calls == [] and beta.calls == []
+
+
+def test_unknown_role_is_refused():
+    with pytest.raises(GatewayError, match="no route"):
+        gateway(FakeProvider("alpha"), FakeProvider("beta")).generate("judge", "summary", ASK)
+
+
+def test_configuration_errors_fail_at_start_up():
+    alpha, beta = FakeProvider("alpha"), FakeProvider("beta")
+    no_caps = SettingsRegistry(MemorySettingsStore(), SETTINGS + GATEWAY_SETTINGS)
+    with pytest.raises(ValueError, match="cap setting"):
+        Gateway([alpha, beta], ROUTES, MemoryLedger(), no_caps)
+    with pytest.raises(ValueError, match="cap setting"):
+        Gateway([alpha, beta], MemoryRouteStore(), MemoryLedger(), no_caps)
+    with pytest.raises(RouteError, match="unknown provider"):
+        Gateway([alpha], ROUTES, MemoryLedger(), settings())
+    no_total = SettingsRegistry(MemorySettingsStore(), SETTINGS + (provider_cap("alpha"), provider_cap("beta")))
+    with pytest.raises(ValueError, match="ai.monthly_cap_usd"):
+        Gateway([alpha, beta], ROUTES, MemoryLedger(), no_total)
+
+
+def test_month_start_is_utc():
+    assert month_start(datetime(2030, 3, 1, 0, 30, tzinfo=UTC)) == datetime(2030, 3, 1, tzinfo=UTC)
+
+
+def test_database_ledger_sums_the_month(pool):
+    ledger = PostgresLedger(pool, SCHEMA)
+    spent(ledger, "alpha", 1.25)
+    spent(ledger, "beta", 2.5)
+    spent(ledger, "alpha", 9.0, at=month_start(NOW) - timedelta(days=1))
+    assert ledger.month_spend(month_start(NOW)) == pytest.approx(3.75)
+    assert ledger.month_spend(month_start(NOW), "alpha") == pytest.approx(1.25)
+    result = gateway(FakeProvider("alpha"), FakeProvider("beta"), ledger).generate("writer", "summary", ASK)
+    assert result.provider == "alpha"
+    with pool.connection() as conn:
+        rows = conn.execute(f"SELECT provider, outcome FROM {SCHEMA}.model_call_log ORDER BY id").fetchall()
+    assert rows[-1] == ("alpha", "ok") and len(rows) == 4
+
+
+# Routes are data an administrator edits: a change is checked, audited and read on the next call.
+
+
+def test_a_route_change_takes_effect_on_the_next_call_and_is_audited():
+    alpha, beta, store = FakeProvider("alpha"), FakeProvider("beta"), MemoryRouteStore()
+    gw = Gateway([alpha, beta], store, MemoryLedger(), settings(), clock=lambda: NOW)
+    with pytest.raises(GatewayError, match="no route"):
+        gw.generate("writer", "summary", ASK)
+    gw.set_route("writer", ROUTES["writer"], changed_by="administrator")
+    assert gw.generate("writer", "summary", ASK).provider == "alpha"
+    change = gw.set_route("writer", [Target("beta", "beta-small")], changed_by="administrator")
+    assert gw.generate("writer", "summary", ASK).provider == "beta"
+    assert (change.old, change.new, change.changed_at) == (ROUTES["writer"], [Target("beta", "beta-small")], NOW)
+    assert [c.changed_by for c in store.audit] == ["administrator", "administrator"]
+
+
+@pytest.mark.parametrize(
+    ("role", "targets", "reason"),
+    [
+        ("writer", [Target("gamma", "gamma-1")], "unknown provider"),
+        ("writer", [Target("alpha", " ")], "needs a model"),
+        ("writer", [], "at least one target"),
+        ("writer", [Target("alpha", "alpha-large"), Target("alpha", "alpha-large")], "twice"),
+        (" ", [Target("alpha", "alpha-large")], "needs a role"),
+    ],
+)
+def test_a_bad_route_is_refused_and_not_saved(role, targets, reason):
+    store = MemoryRouteStore()
+    gw = Gateway([FakeProvider("alpha"), FakeProvider("beta")], store, MemoryLedger(), settings())
+    with pytest.raises(RouteError, match=reason):
+        gw.set_route(role, targets, changed_by="administrator")
+    assert store.routes == {} and store.audit == []
+
+
+def test_a_stored_target_whose_provider_left_is_skipped_without_a_call():
+    store = MemoryRouteStore({"writer": [Target("retired", "old-model"), Target("beta", "beta-small")]})
+    ledger = MemoryLedger()
+    gw = Gateway([FakeProvider("alpha"), FakeProvider("beta")], store, ledger, settings(), clock=lambda: NOW)
+    assert gw.generate("writer", "summary", ASK).provider == "beta"
+    assert [r["provider"] for r in ledger.rows] == ["beta"]
+
+
+def admin_client(gw: Gateway, role: str = "administrator") -> TestClient:
+    return TestClient(create_app(settings=settings(), current_role=lambda request: role, gateway=gw))
+
+
+def test_admin_endpoint_lists_and_changes_routes():
+    gw = Gateway([FakeProvider("alpha"), FakeProvider("beta")], ROUTES, MemoryLedger(), settings(), clock=lambda: NOW)
+    c = admin_client(gw)
+    listed = c.get("/admin/model-routes").json()
+    assert listed["providers"] == ["alpha", "beta"]
+    writer = [{"provider": "alpha", "model": "alpha-large"}, {"provider": "beta", "model": "beta-small"}]
+    assert listed["routes"] == [{"role": "writer", "targets": writer}]
+    r = c.put("/admin/model-routes/writer", json={"targets": [{"provider": "beta", "model": "beta-small"}]})
+    assert r.status_code == 200 and r.json()["new"] == [{"provider": "beta", "model": "beta-small"}]
+    assert gw.generate("writer", "summary", ASK).provider == "beta"
+    bad = c.put("/admin/model-routes/writer", json={"targets": [{"provider": "gamma", "model": "gamma-1"}]})
+    assert bad.status_code == 422 and "unknown provider" in bad.json()["detail"]
+
+
+def test_admin_endpoint_needs_the_administrator_role():
+    gw = Gateway([FakeProvider("alpha"), FakeProvider("beta")], ROUTES, MemoryLedger(), settings())
+    c = admin_client(gw, role="viewer")
+    assert c.get("/admin/model-routes").status_code == 403
+    assert c.put("/admin/model-routes/writer", json={"targets": []}).status_code == 403
+    assert gw.routes() == ROUTES
+
+
+def test_the_wired_gateway_starts_without_providers():
+    gw = build_gateway(None, SettingsRegistry(MemorySettingsStore(), ALL_SETTINGS))
+    assert gw.provider_names() == [] and gw.routes() == {}
+    with pytest.raises(RouteError, match="unknown provider"):
+        gw.set_route("writer", [Target("alpha", "alpha-large")], changed_by="administrator")
+
+
+def test_database_routes_are_saved_in_order_with_their_audit(pool):
+    store = PostgresRouteStore(pool, SCHEMA)
+    gw = Gateway([FakeProvider("alpha"), FakeProvider("beta")], store, MemoryLedger(), settings(), clock=lambda: NOW)
+    gw.set_route("writer", ROUTES["writer"], changed_by="administrator")
+    gw.set_route("judge", [Target("beta", "beta-small")], changed_by="administrator")
+    change = gw.set_route("writer", [Target("beta", "beta-small"), Target("alpha", "alpha-large")], changed_by="ops")
+    assert change.old == ROUTES["writer"]
+    assert store.load("writer") == [Target("beta", "beta-small"), Target("alpha", "alpha-large")]
+    assert store.all() == {"judge": [Target("beta", "beta-small")], "writer": store.load("writer")}
+    assert gw.generate("writer", "summary", ASK).provider == "beta"
+    with pool.connection() as conn:
+        rows = conn.execute(
+            f"SELECT role, old_targets, new_targets, changed_by FROM {SCHEMA}.model_route_audit ORDER BY id"
+        ).fetchall()
+    assert [(r[0], r[3]) for r in rows] == [("writer", "administrator"), ("judge", "administrator"), ("writer", "ops")]
+    assert rows[2][1] == [{"provider": "alpha", "model": "alpha-large"}, {"provider": "beta", "model": "beta-small"}]

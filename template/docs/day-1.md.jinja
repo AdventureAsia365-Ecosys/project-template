@@ -13,7 +13,7 @@ its evidence. The 30 / 60 / 90-day plan is in the same playbook page.
 | 5 | Write the first ADRs: stack, data ownership, identity, environments ([`adr/README.md`](adr/README.md)) | Orchestrator agent, tech lead accepts | Four ADRs Accepted | [ ] |
 | 6 | Quote the Dev skeleton's monthly cost and get the business owner's yes{% if has_infra %}; then create the cloud account and the CI role through `infra/`, with tags and a budget alert at that figure{% endif %} | Tech lead | Cost sheet row with the yes{% if has_infra %}; `terraform apply` log{% endif %} | [ ] |
 {%- if has_db %}
-| 7 | Apply migration `{{ migration_prefix }}-001` (schema, roles, schema versions) from CI | Orchestrator agent | The CI run that applied it | [ ] |
+| 7 | Apply the migrations `{{ migration_prefix }}-001` (schema, roles, schema versions, settings, job table) and `{{ migration_prefix }}-002` (job store columns) from CI; store the app's connection string as `DATABASE_URL` in the secret store | Orchestrator agent | The CI run that applied them; the secrets register row | [ ] |
 {%- else %}
 | 7 | No database in this repo: mark not applicable | Orchestrator agent | n/a | [ ] |
 {%- endif %}

@@ -1,0 +1,62 @@
+{%- set s = project_slug | replace('-', '_') -%}
+-- {{ migration_prefix }}-002: database-backed job store: idempotency key, run_after, finished_at{% if multi_tenant %}, tenant_id for the fair-share gate{% endif %}{% if ai_features %}; model routes (admin-edited, audited) and the month index of the model-call ledger{% endif %}.
+-- migrate: expand
+-- Phase: expand (new nullable or defaulted columns, new indexes{% if ai_features %}, new tables{% endif %}; no rename, no drop, no backfill).
+-- Touches (lock-sensitive): {{ s }}.job{% if ai_features %}, {{ s }}.model_call_log{% endif %}
+-- Template: docs/templates/migration-file.md. Applied by CI in key order after 001; idempotent (CI applies it twice).
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+
+-- Job store (api/app/jobs.py, PostgresJobStore).
+ALTER TABLE {{ s }}.job ADD COLUMN IF NOT EXISTS idempotency_key text;
+ALTER TABLE {{ s }}.job ADD COLUMN IF NOT EXISTS run_after timestamptz NOT NULL DEFAULT now();
+ALTER TABLE {{ s }}.job ADD COLUMN IF NOT EXISTS finished_at timestamptz;
+-- Clean-up of finished jobs (jobs.retention_days).
+CREATE INDEX IF NOT EXISTS job_finished_idx ON {{ s }}.job (finished_at) WHERE status IN ('done', 'failed');
+GRANT DELETE ON {{ s }}.job TO {{ s }}_app;
+{%- if multi_tenant %}
+
+-- Fair-share gate: a job may belong to a tenant; a claim counts the tenant's running jobs.
+ALTER TABLE {{ s }}.job ADD COLUMN IF NOT EXISTS tenant_id uuid REFERENCES {{ s }}.tenant (id);
+CREATE INDEX IF NOT EXISTS job_tenant_running_idx ON {{ s }}.job (tenant_id) WHERE status = 'running';
+-- One job per idempotency key and tenant (two tenants never share a job through one key); jobs without a tenant
+-- share the all-f sentinel tenant, and jobs without a key are not constrained. Same expression as jobs.py (_TENANT_KEY).
+CREATE UNIQUE INDEX IF NOT EXISTS job_idempotency_key_uq
+  ON {{ s }}.job ((coalesce(tenant_id, 'ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid)), idempotency_key)
+  WHERE idempotency_key IS NOT NULL;
+{%- else %}
+-- One job per idempotency key; jobs without a key are not constrained.
+CREATE UNIQUE INDEX IF NOT EXISTS job_idempotency_key_uq ON {{ s }}.job (idempotency_key) WHERE idempotency_key IS NOT NULL;
+{%- endif %}
+{%- if ai_features %}
+
+-- Model gateway: the month's spend is read before every call.
+CREATE INDEX IF NOT EXISTS model_call_log_created_idx ON {{ s }}.model_call_log (created_at, provider);
+
+-- Model routes (api/app/gateway.py, PostgresRouteStore): each role's targets in fallback order, edited by an
+-- administrator at /admin/model-routes; the API checks the provider against the registered ones before a save.
+-- No seed rows: a fresh project registers no provider; the first routes are set through the admin endpoint.
+CREATE TABLE IF NOT EXISTS {{ s }}.model_route (
+  role      text NOT NULL,
+  position  integer NOT NULL CHECK (position >= 1),
+  provider  text NOT NULL,
+  model     text NOT NULL,
+  PRIMARY KEY (role, position)
+);
+-- Every route change: who, when, the targets before and after.
+CREATE TABLE IF NOT EXISTS {{ s }}.model_route_audit (
+  id          bigserial PRIMARY KEY,
+  role        text NOT NULL,
+  old_targets jsonb NOT NULL,
+  new_targets jsonb NOT NULL,
+  changed_by  text NOT NULL,
+  changed_at  timestamptz NOT NULL DEFAULT now()
+);
+GRANT SELECT, INSERT, DELETE ON {{ s }}.model_route TO {{ s }}_app;
+GRANT SELECT, INSERT ON {{ s }}.model_route_audit TO {{ s }}_app;
+GRANT USAGE ON SEQUENCE {{ s }}.model_route_audit_id_seq TO {{ s }}_app;
+{%- endif %}
+
+INSERT INTO {{ s }}.schema_versions (key) VALUES ('{{ migration_prefix }}-002') ON CONFLICT (key) DO NOTHING;
+
+COMMIT;
