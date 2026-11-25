@@ -13,7 +13,9 @@ All notable changes of the template. Written by release-please from the Conventi
   self-hosted apps forwarding fetched responses); `npm audit` of a fresh web project now reports none, and `next build`
   no longer prints the security notice. React, TypeScript and the other pins do not change.
 - Template CI: the render job's `copier update` check starts from v1.3.0, and a test keeps the `next` pin exact and
-  at or above 16.4.5.
+  at or above 16.4.5. The update check now also covers a project from a release that ships the kit lint: it writes
+  its baseline with a page of its own first, and the update must keep that baseline and leave the lint on (from a
+  release before the kit, as before, the update adds no baseline and the lint only reports).
 
 ### Upgrade note
 
