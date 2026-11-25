@@ -124,6 +124,12 @@ jobs:
       - run: npm run build
         env:
           NODE_OPTIONS: --max-old-space-size=2048
+      - name: UAT harness (install, typecheck, format and report tests)
+        working-directory: tools/uat
+        run: |
+          npm install --no-audit --no-fund
+          npm run typecheck
+          npm test
 {%- endif %}
 {%- if has_db %}
 

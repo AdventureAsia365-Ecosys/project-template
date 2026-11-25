@@ -48,6 +48,10 @@ first, then here.
 | Decisions | [`docs/adr/README.md`](docs/adr/README.md) |
 | Procedures (session, ship, issue, lessons, UI check, batch run, UAT, business update) | [`.claude/skills/README.md`](.claude/skills/README.md) |
 | The day-1 checklist | [`docs/day-1.md`](docs/day-1.md) |
+{%- if has_web %}
+| UI components (one design system) | [`web/app/_kit/README.md`](web/app/_kit/README.md) |
+| UAT scenarios and recordings | [`tools/uat/README.md`](tools/uat/README.md) |
+{%- endif %}
 
 ## Project parameters
 
@@ -90,7 +94,8 @@ The generic skills read their values here; a skill names a parameter, never a va
 {%- if has_web %}
 | Web apps and preview hosts | `web/`: <preview host pattern> |
 | Sign-in for automated checks | <test account kind; never a real person's account> |
-| UI kit path | <path of the shared UI components> |
+| UI kit path | `web/app/_kit/` (import from `@/app/_kit`; gallery at `/kit`; `web/lib/kitLint.ts` fails `npm test` on ad-hoc styles beyond `web/kit-lint-baseline.json`) |
+| UAT harness | `tools/uat/`: scenarios in `tools/uat/scenarios/`, `npm run uat -- --base-url <url>`, takes and report index in `tools/uat/out/` (`.github/workflows/uat.yml` on a deployed URL); a password or code only through `value_env` (repository secrets `UAT_*`), never in a scenario file |
 {%- if has_ui_smoke %}
 | UI smoke routes | `web/e2e/smoke-routes.json` (`.github/workflows/ui-smoke.yml` after each web deploy) |
 {%- endif %}

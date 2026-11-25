@@ -3,6 +3,7 @@
   "timeout_ms": 30000,
   "routes": [
     { "path": "/", "selector": "main" },
+    { "path": "/kit", "selector": "main" },
     { "path": "/api/health" }
   ]
 }

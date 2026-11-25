@@ -1,0 +1,4 @@
+{
+  "_comment": "Kit lint baseline (lib/kitLint.ts): findings accepted when the project adopted the kit, counted per file and rule. npm test fails on a finding beyond these counts and on a count above what is found, so the list only shrinks. A fresh project starts empty. Rewrite: npm run kit-lint -- --write-baseline",
+  "accepted": {}
+}

@@ -13,7 +13,7 @@ Each page says what it keeps or drops.
 
 ```bash
 pipx install copier==9.19.1
-copier copy --vcs-ref v1.1.0 gh:<org>/project-template my-project
+copier copy --vcs-ref v1.3.0 gh:<org>/project-template my-project
 cd my-project && less docs/day-1.md
 ```
 
@@ -23,7 +23,7 @@ Copier asks the day-1 questionnaire:
 |---|---|---|
 | Project name and slug | text | none |
 | Repo layout | single repo; root repo of several; app repo | single repo |
-| Stacks | Python API, Next.js web, Lambda | Python API and Next.js web |
+| Stacks | Python API, Next.js web (with the UI kit and the UAT harness), Lambda | Python API and Next.js web |
 | Multi-tenant | yes / no (row-level security with FORCE, isolation probe, tenant-scoped connection pool, fair-share job gate) | no |
 | AI features | yes / no (model gateway core with admin-edited routes, fallback and monthly spend caps; model-call ledger, AI use and prompt registers, eval workflow) | no |
 | Cloud | AWS / none | AWS |
@@ -51,17 +51,12 @@ releases into the project as a normal PR ([`VERSIONING.md`](VERSIONING.md)).
 | `docs/templates/` | Discovery brief, charter, RAID, cost sheet, ADR, threat model, runbook, postmortem, delivery metrics report and more |
 | `docs/day-1.md` | The day-1 checklist as a tracked list |
 | `.claude/` | Guardrail hooks (subagents never push, merge, apply or delete; MCP writes blocked for subagents; shell-mistake refusals; optional stop hook and personal-data guard) with their red-team tests, and the generic skills |
-| `.github/` | CI, PR title, docs lint, secret scan (gitleaks, pinned and checksum-verified), workflow lint, release-please, post-deploy verify, optional API contract check and UI smoke; code-health and coverage ratchets |
+| `.github/` | CI, PR title, docs lint, secret scan (gitleaks, pinned and checksum-verified), workflow lint, release-please, post-deploy verify, optional API contract check and UI smoke, UAT runs on demand for web projects; code-health and coverage ratchets |
 | `api/`, `db/`, `web/`, `lambda/`, `infra/` | Skeletons for the chosen stacks. The API's job and settings stores run on Postgres when `DATABASE_URL` is set (in-memory ones for tests); the API CI job runs the integration tests on a throwaway Postgres |
-| `tools/uat/` | A note on the UAT harness (how scenarios are laid out and recorded); no runnable harness yet |
+| `web/app/_kit/` | The UI kit: neutral light and dark tokens, Button, Table with server paging, EmptyState, Drawer, Toast, PageHeader, Tabs, status Badge; a gallery at `/kit`; a kit lint in `npm test` that fails a page with ad-hoc styles (a project updated from an earlier release starts in report-only mode until it writes `web/kit-lint-baseline.json`) |
+| `tools/uat/` | A runnable UAT harness: JSON scenarios with an assertion on every step, Playwright screenshots, optional video, captions, and a report index; secrets only through `value_env` (masked in screenshots and video, kept out of the results); one example scenario walks the kit gallery |
 
-### Not in 1.2.0
-
-The kit design names these parts; this release does not ship them yet. Each one is planned for a later minor
-release (a new optional file or check, [`VERSIONING.md`](VERSIONING.md)) and listed in [`CHANGELOG.md`](CHANGELOG.md).
-
-- Web: a UI kit (shared components) in the web skeleton; `AGENTS.md` only names its path as a project parameter.
-- UAT: a runnable harness under `tools/uat/` (today a README).
+Every part of the kit design ships as of 1.3.0.
 
 ## How this repo works
 

@@ -1,10 +1,17 @@
-// Home page placeholder. Build pages from the project's UI kit components only (one design system), never one-off
-// styles per page.
+// Home page placeholder. Build pages from the UI kit only (app/_kit, gallery at /kit), never one-off styles per page:
+// lib/kitLint.ts fails `npm test` when a page does.
+import { ButtonLink, PageHeader } from "@/app/_kit";
+
+const PROJECT_NAME = {{ project_name | tojson }};
+
 export default function Home() {
   return (
-    <main>
-      <h1>{{ project_name }}</h1>
-      <p>The skeleton is running. Start with the day-1 checklist in docs/day-1.md.</p>
+    <main className="kit-page">
+      <PageHeader
+        title={PROJECT_NAME}
+        description="The skeleton is running. Start with the day-1 checklist in docs/day-1.md."
+        actions={<ButtonLink href="/kit">UI kit gallery</ButtonLink>}
+      />
     </main>
   );
 }

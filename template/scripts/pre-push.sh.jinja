@@ -34,10 +34,21 @@ fi
 run "lambda tests" python3 -m unittest discover -s lambda -p 'test_*.py'
 {%- endif %}
 {%- if has_web %}
+if command -v node >/dev/null; then
+  run "web unit tests (kit lint)" bash -c 'cd web && npm test --silent'
+  run "uat harness tests" bash -c 'cd tools/uat && npm test --silent'
+else
+  echo "skip  web unit tests and uat harness tests (no node on PATH)"
+fi
 if [ -d web/node_modules ]; then
   run "web typecheck" bash -c 'cd web && npm run --silent typecheck'
 else
   echo "skip  web typecheck (no web/node_modules: cd web && npm install)"
+fi
+if [ -d tools/uat/node_modules ]; then
+  run "uat harness typecheck" bash -c 'cd tools/uat && npm run --silent typecheck'
+else
+  echo "skip  uat harness typecheck (no tools/uat/node_modules: cd tools/uat && npm install)"
 fi
 {%- endif %}
 rm -f "$log"
