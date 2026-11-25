@@ -57,13 +57,13 @@ stacks:
 
 multi_tenant:
   type: bool
-  help: Multi-tenant (adds row-level security with FORCE and an isolation probe test; the tenant-scoped pool and the fair-share job gate are not in this release yet, see CHANGELOG.md)
+  help: Multi-tenant (adds row-level security with FORCE, an isolation probe test, the tenant-scoped connection pool and the fair-share job gate)
   default: false
   when: "{{ repo_layout != 'root' and 'python-api' in stacks }}"
 
 ai_features:
   type: bool
-  help: AI features (adds the model-call ledger, the prompt register, the AI use register and an eval workflow; the model gateway core is not in this release yet, see CHANGELOG.md)
+  help: AI features (adds the model gateway core with routing, fallback and monthly spend caps, the model-call ledger, the prompt register, the AI use register and an eval workflow)
   default: false
 
 cloud:

@@ -31,7 +31,7 @@ the same PR. Delete this comment when the page is filled. -->
 |---|---|---|---|
 {%- if has_api %}
 | API | Python, FastAPI | schema `{{ project_slug | replace('-', '_') }}` | `api/` |
-| Worker | Python (same image as the API) | the job table | `api/app/jobs.py` |
+| Worker | Python (same image as the API) | the job table (claimed with `FOR UPDATE SKIP LOCKED`) | `api/app/jobs.py` |
 {%- endif %}
 {%- if has_web %}
 | Web | Next.js (BFF) | none | `web/` |
@@ -56,10 +56,13 @@ the same PR. Delete this comment when the page is filled. -->
   (`docs/templates/settings-entry.md`), never a code literal.
 - Migrations: expand / contract (`docs/templates/migration-file.md`), applied by CI, never from a laptop.
 {%- if multi_tenant %}
-- Tenancy: every tenant table has row-level security with FORCE; the API sets the tenant per transaction.
+- Tenancy: every tenant table has row-level security with FORCE; tenant queries run only through
+  `TenantScopedPool.transaction(tenant_id)` (`api/app/tenancy.py`), which sets the tenant per transaction. A tenant
+  holds at most `jobs.max_running_per_tenant` running jobs (fair-share gate).
 {%- endif %}
 {%- if ai_features %}
-- AI: every model call is written to the call ledger with its billed tokens and cost (`docs/ai/README.md`).
+- AI: every model call goes through the gateway (`api/app/gateway.py`: routes by role, fallback, monthly spend caps
+  checked before the call) and is written to the call ledger with its billed tokens and cost (`docs/ai/README.md`).
 {%- endif %}
 
 ## 9. Decisions

@@ -1,0 +1,33 @@
+{%- set s = project_slug | replace('-', '_') -%}
+-- {{ migration_prefix }}-002: database-backed job store: idempotency key, run_after, finished_at{% if multi_tenant %}, tenant_id for the fair-share gate{% endif %}{% if ai_features %}; month index of the model-call ledger{% endif %}.
+-- migrate: expand
+-- Phase: expand (new nullable or defaulted columns and new indexes; no rename, no drop, no backfill).
+-- Touches (lock-sensitive): {{ s }}.job{% if ai_features %}, {{ s }}.model_call_log{% endif %}
+-- Template: docs/templates/migration-file.md. Applied by CI in key order after 001; idempotent (CI applies it twice).
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+
+-- Job store (api/app/jobs.py, PostgresJobStore).
+ALTER TABLE {{ s }}.job ADD COLUMN IF NOT EXISTS idempotency_key text;
+ALTER TABLE {{ s }}.job ADD COLUMN IF NOT EXISTS run_after timestamptz NOT NULL DEFAULT now();
+ALTER TABLE {{ s }}.job ADD COLUMN IF NOT EXISTS finished_at timestamptz;
+-- One job per idempotency key; jobs without a key are not constrained.
+CREATE UNIQUE INDEX IF NOT EXISTS job_idempotency_key_uq ON {{ s }}.job (idempotency_key) WHERE idempotency_key IS NOT NULL;
+-- Clean-up of finished jobs (jobs.retention_days).
+CREATE INDEX IF NOT EXISTS job_finished_idx ON {{ s }}.job (finished_at) WHERE status IN ('done', 'failed');
+GRANT DELETE ON {{ s }}.job TO {{ s }}_app;
+{%- if multi_tenant %}
+
+-- Fair-share gate: a job may belong to a tenant; a claim counts the tenant's running jobs.
+ALTER TABLE {{ s }}.job ADD COLUMN IF NOT EXISTS tenant_id uuid REFERENCES {{ s }}.tenant (id);
+CREATE INDEX IF NOT EXISTS job_tenant_running_idx ON {{ s }}.job (tenant_id) WHERE status = 'running';
+{%- endif %}
+{%- if ai_features %}
+
+-- Model gateway: the month's spend is read before every call.
+CREATE INDEX IF NOT EXISTS model_call_log_created_idx ON {{ s }}.model_call_log (created_at, provider);
+{%- endif %}
+
+INSERT INTO {{ s }}.schema_versions (key) VALUES ('{{ migration_prefix }}-002') ON CONFLICT (key) DO NOTHING;
+
+COMMIT;

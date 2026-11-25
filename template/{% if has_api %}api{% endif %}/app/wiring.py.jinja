@@ -1,0 +1,61 @@
+"""Wiring: which stores the API and the worker use, and every setting the code reads.
+
+With `DATABASE_URL` set (a secret reference, injected at deploy; docs/security/secrets-register.md) the API and the
+worker use the database stores of schema `{{ project_slug | replace('-', '_') }}`; without it (tests, a laptop) the in-memory ones. The
+connection string is deploy configuration; thresholds and limits are settings (ALL_SETTINGS), never variables.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from typing import Any
+{% if ai_features %}
+from .gateway import GATEWAY_SETTINGS
+{%- endif %}
+from .jobs import JobStore, MemoryJobStore, PostgresJobStore
+from .settings_registry import SETTINGS, MemorySettingsStore, PostgresSettingsStore, Setting, SettingsRegistry
+{%- if multi_tenant %}
+from .tenancy import TENANCY_SETTINGS
+{%- endif %}
+
+SCHEMA = "{{ project_slug | replace('-', '_') }}"
+MULTI_TENANT = {{ 'True' if multi_tenant else 'False' }}
+
+# Every setting the code reads. Add a module's tuple here when it declares its own{% if ai_features %} (and one
+# gateway.provider_cap(<name>) per model provider the routes use){% endif %}.
+ALL_SETTINGS: tuple[Setting, ...] = SETTINGS{% if multi_tenant %} + TENANCY_SETTINGS{% endif %}{% if ai_features %} + GATEWAY_SETTINGS{% endif %}
+
+
+@dataclass
+class Stores:
+    jobs: JobStore
+    settings: SettingsRegistry
+
+
+def pool_from_env(env: dict[str, str] | None = None) -> Any | None:
+    """A closed connection pool for DATABASE_URL, or None when it is not set. The caller opens and closes it."""
+    dsn = (env if env is not None else os.environ).get("DATABASE_URL", "")
+    if not dsn:
+        return None
+    from psycopg_pool import ConnectionPool
+
+    # Pool size: psycopg_pool's defaults. Size it with the database's connection limit in the deploy config (the
+    # settings registry lives behind this pool, so it cannot hold the pool's own size).
+    return ConnectionPool(dsn, open=False, name=SCHEMA)
+
+
+def build_stores(pool: Any | None) -> Stores:
+    if pool is None:
+        return Stores(MemoryJobStore(), SettingsRegistry(MemorySettingsStore(), ALL_SETTINGS))
+    jobs = PostgresJobStore(pool, SCHEMA, tenant_aware=MULTI_TENANT)
+    return Stores(jobs, SettingsRegistry(PostgresSettingsStore(pool, SCHEMA), ALL_SETTINGS))
+
+
+def database_ready(pool: Any) -> bool:
+    try:
+        with pool.connection(timeout=2) as conn:
+            conn.execute("SELECT 1")
+        return True
+    except Exception:  # noqa: BLE001 - readiness reports, it does not raise
+        return False

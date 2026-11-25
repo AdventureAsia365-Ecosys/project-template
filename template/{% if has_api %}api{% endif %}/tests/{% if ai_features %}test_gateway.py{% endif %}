@@ -1,0 +1,160 @@
+"""Model gateway core with fake providers: routing, fallback, spend caps (fail-closed) and one ledger row per attempt.
+No model is called and no key is read. The database ledger test skips without TEST_DATABASE_URL."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+
+import pytest
+
+from app.gateway import (
+    GATEWAY_SETTINGS,
+    CapExceeded,
+    FakeProvider,
+    FatalProviderError,
+    Gateway,
+    GatewayError,
+    Request,
+    Target,
+    month_start,
+    provider_cap,
+)
+from app.model_ledger import MemoryLedger, PostgresLedger, record_call
+from app.settings_registry import SETTINGS, MemorySettingsStore, SettingsRegistry
+from app.wiring import SCHEMA
+
+NOW = datetime(2030, 3, 14, 9, 30, tzinfo=UTC)
+ASK = Request(prompt="Summarise the invented harbour schedule")
+ROUTES = {"writer": [Target("alpha", "alpha-large"), Target("beta", "beta-small")]}
+
+
+def settings(**values: int) -> SettingsRegistry:
+    defs = SETTINGS + GATEWAY_SETTINGS + (provider_cap("alpha"), provider_cap("beta"))
+    return SettingsRegistry(MemorySettingsStore(values=dict(values)), defs)
+
+
+def gateway(alpha: FakeProvider, beta: FakeProvider, ledger=None, **values: int) -> Gateway:
+    return Gateway([alpha, beta], ROUTES, ledger or MemoryLedger(), settings(**values), clock=lambda: NOW)
+
+
+def spent(ledger, provider: str, usd: float, at: datetime = NOW) -> None:
+    record_call(ledger, stage="earlier", role="writer", provider=provider, model="m", outcome="ok", cost_usd=usd, at=at)
+
+
+def test_the_first_target_answers_and_is_recorded_with_billed_fields():
+    alpha, beta, ledger = FakeProvider("alpha"), FakeProvider("beta"), MemoryLedger()
+    result = gateway(alpha, beta, ledger).generate("writer", "summary", ASK)
+    assert (result.provider, result.model, result.text) == ("alpha", "alpha-large", "[alpha] ok")
+    assert beta.calls == []
+    row = ledger.rows[-1]
+    assert (row["outcome"], row["stage"], row["role"], row["cost_usd"], row["output_tokens"]) == (
+        "ok",
+        "summary",
+        "writer",
+        0.01,
+        8,
+    )
+    assert row["created_at"] == NOW and row["latency_ms"] >= 0
+
+
+def test_a_failing_target_falls_back_to_the_next():
+    alpha = FakeProvider("alpha", script=[TimeoutError("slow upstream")])
+    beta, ledger = FakeProvider("beta"), MemoryLedger()
+    result = gateway(alpha, beta, ledger).generate("writer", "summary", ASK)
+    assert result.provider == "beta"
+    assert [(r["provider"], r["outcome"]) for r in ledger.rows] == [("alpha", "error"), ("beta", "ok")]
+    assert ledger.rows[0]["cost_usd"] == 0.0
+
+
+def test_every_target_failing_raises_with_the_reasons():
+    alpha = FakeProvider("alpha", script=[TimeoutError("slow")])
+    beta = FakeProvider("beta", script=[ConnectionError("down")])
+    with pytest.raises(GatewayError, match="TimeoutError.*ConnectionError"):
+        gateway(alpha, beta).generate("writer", "summary", ASK)
+
+
+def test_a_fatal_error_stops_the_chain():
+    alpha, beta = FakeProvider("alpha", script=[FatalProviderError("request too large")]), FakeProvider("beta")
+    with pytest.raises(FatalProviderError):
+        gateway(alpha, beta).generate("writer", "summary", ASK)
+    assert beta.calls == []
+
+
+def test_a_provider_over_its_cap_is_skipped_before_the_call():
+    alpha, beta, ledger = FakeProvider("alpha"), FakeProvider("beta"), MemoryLedger()
+    spent(ledger, "alpha", 10.0)  # alpha's default cap is 10 USD
+    result = gateway(alpha, beta, ledger).generate("writer", "summary", ASK)
+    assert result.provider == "beta" and alpha.calls == []
+    assert [(r["provider"], r["outcome"]) for r in ledger.rows[1:]] == [("alpha", "refused"), ("beta", "ok")]
+
+
+def test_the_estimate_counts_against_the_cap():
+    alpha, beta, ledger = FakeProvider("alpha", price_usd=0.5), FakeProvider("beta"), MemoryLedger()
+    spent(ledger, "alpha", 9.75)
+    assert gateway(alpha, beta, ledger).generate("writer", "summary", ASK).provider == "beta"
+
+
+def test_the_total_cap_refuses_every_provider():
+    alpha, beta, ledger = FakeProvider("alpha"), FakeProvider("beta"), MemoryLedger()
+    spent(ledger, "beta", 5.0)
+    with pytest.raises(CapExceeded):
+        gateway(alpha, beta, ledger, **{"ai.monthly_cap_usd": 5}).generate("writer", "summary", ASK)
+    assert alpha.calls == [] and beta.calls == [] and ledger.rows[-1]["outcome"] == "refused"
+
+
+def test_a_cap_of_zero_turns_a_provider_off():
+    alpha, beta = FakeProvider("alpha", price_usd=0.0), FakeProvider("beta")
+    result = gateway(alpha, beta, **{"ai.monthly_cap_usd.alpha": 0}).generate("writer", "summary", ASK)
+    assert result.provider == "beta"
+
+
+def test_last_month_does_not_count():
+    alpha, beta, ledger = FakeProvider("alpha"), FakeProvider("beta"), MemoryLedger()
+    spent(ledger, "alpha", 50.0, at=month_start(NOW) - timedelta(seconds=1))
+    assert gateway(alpha, beta, ledger).generate("writer", "summary", ASK).provider == "alpha"
+
+
+def test_no_spend_figure_means_no_call():
+    class BrokenLedger(MemoryLedger):
+        def month_spend(self, since, provider=None):
+            raise OSError("ledger unreachable")
+
+    alpha, beta = FakeProvider("alpha"), FakeProvider("beta")
+    with pytest.raises(GatewayError, match="no call made"):
+        gateway(alpha, beta, BrokenLedger()).generate("writer", "summary", ASK)
+    assert alpha.calls == [] and beta.calls == []
+
+
+def test_unknown_role_is_refused():
+    with pytest.raises(GatewayError, match="no route"):
+        gateway(FakeProvider("alpha"), FakeProvider("beta")).generate("judge", "summary", ASK)
+
+
+def test_configuration_errors_fail_at_start_up():
+    alpha, beta = FakeProvider("alpha"), FakeProvider("beta")
+    no_caps = SettingsRegistry(MemorySettingsStore(), SETTINGS + GATEWAY_SETTINGS)
+    with pytest.raises(ValueError, match="cap setting"):
+        Gateway([alpha, beta], ROUTES, MemoryLedger(), no_caps)
+    with pytest.raises(ValueError, match="unknown provider"):
+        Gateway([alpha], ROUTES, MemoryLedger(), settings())
+    no_total = SettingsRegistry(MemorySettingsStore(), SETTINGS + (provider_cap("alpha"), provider_cap("beta")))
+    with pytest.raises(ValueError, match="ai.monthly_cap_usd"):
+        Gateway([alpha, beta], ROUTES, MemoryLedger(), no_total)
+
+
+def test_month_start_is_utc():
+    assert month_start(datetime(2030, 3, 1, 0, 30, tzinfo=UTC)) == datetime(2030, 3, 1, tzinfo=UTC)
+
+
+def test_database_ledger_sums_the_month(pool):
+    ledger = PostgresLedger(pool, SCHEMA)
+    spent(ledger, "alpha", 1.25)
+    spent(ledger, "beta", 2.5)
+    spent(ledger, "alpha", 9.0, at=month_start(NOW) - timedelta(days=1))
+    assert ledger.month_spend(month_start(NOW)) == pytest.approx(3.75)
+    assert ledger.month_spend(month_start(NOW), "alpha") == pytest.approx(1.25)
+    result = gateway(FakeProvider("alpha"), FakeProvider("beta"), ledger).generate("writer", "summary", ASK)
+    assert result.provider == "alpha"
+    with pool.connection() as conn:
+        rows = conn.execute(f"SELECT provider, outcome FROM {SCHEMA}.model_call_log ORDER BY id").fetchall()
+    assert rows[-1] == ("alpha", "ok") and len(rows) == 4

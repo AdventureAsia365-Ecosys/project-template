@@ -1,0 +1,185 @@
+"""Model gateway core: the one client every model call goes through.
+
+- Routing by role: a role (writer, judge, ...) names an ordered list of targets (provider and model). Code asks for
+  a role, never for a provider.
+- Ordered fallback: when a target fails, or its provider's monthly cap would be passed, the next target is tried.
+  A `FatalProviderError` (a request the provider will never accept) stops the chain instead.
+- Spend caps, enforced before the call and fail-closed: the month's spend in the ledger plus the provider's estimate
+  for this call must stay within the total cap (`ai.monthly_cap_usd`) and the provider's cap
+  (`ai.monthly_cap_usd.<provider>`). Both are settings an administrator edits (settings_registry.py); a provider
+  without a cap setting is a configuration error at start-up. When the ledger cannot be read, no call is made.
+- One ledger row per attempt (model_ledger.py), refused and failed attempts included, with `billed_fields(resp)`.
+
+Parallel calls each check the cap before they run, so together they can pass it by at most their own estimates.
+
+Providers implement `Provider`; this module ships only `FakeProvider` (tests and local runs, no network, no key).
+A real provider is a small adapter in its own module: it reads its key from the secret store at run time, maps the
+request to the vendor's API and returns `{"text": ..., "usage": {"input_tokens", "output_tokens", "cost_usd"}}`.
+"""
+
+from __future__ import annotations
+
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from typing import Any, Protocol
+
+from .model_ledger import Ledger, billed_fields, record_call
+from .settings_registry import Setting, SettingsRegistry
+
+TOTAL_CAP = "ai.monthly_cap_usd"
+
+# The gateway's settings; app/wiring.py adds them, with one `provider_cap(...)` per provider the routes use.
+GATEWAY_SETTINGS: tuple[Setting, ...] = (
+    Setting(TOTAL_CAP, 20, 0, 1_000_000, "Model spend allowed per calendar month (UTC), all providers, in USD."),
+)
+
+
+def provider_cap(provider: str, default: int = 10) -> Setting:
+    """The monthly cap setting of one provider. 0 turns the provider off."""
+    return Setting(f"{TOTAL_CAP}.{provider}", default, 0, 1_000_000, f"Model spend per month on {provider}, in USD.")
+
+
+@dataclass(frozen=True)
+class Target:
+    provider: str
+    model: str
+
+
+@dataclass(frozen=True)
+class Request:
+    prompt: str
+    max_output_tokens: int = 512
+    options: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class Result:
+    text: str
+    provider: str
+    model: str
+    response: dict[str, Any]
+
+
+class Provider(Protocol):
+    name: str
+
+    def complete(self, model: str, request: Request) -> dict[str, Any]: ...
+
+    def estimate_cost_usd(self, model: str, request: Request) -> float: ...
+
+
+class GatewayError(RuntimeError):
+    """No answer: every target failed or was refused."""
+
+
+class CapExceeded(GatewayError):
+    """The total monthly cap would be passed; no provider is tried."""
+
+
+class FatalProviderError(RuntimeError):
+    """Raised by a provider for a request no provider would accept (the chain stops)."""
+
+
+@dataclass
+class FakeProvider:
+    """A scripted provider: each call takes the next item of `script` (a response dict, or an exception to raise)."""
+
+    name: str
+    script: list[Any] = field(default_factory=list)
+    price_usd: float = 0.01
+    calls: list[tuple[str, Request]] = field(default_factory=list)
+
+    def complete(self, model: str, request: Request) -> dict[str, Any]:
+        self.calls.append((model, request))
+        item = self.script.pop(0) if self.script else self.default_response(request)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+    def default_response(self, request: Request) -> dict[str, Any]:
+        usage = {"input_tokens": len(request.prompt.split()), "output_tokens": 8, "cost_usd": self.price_usd}
+        return {"text": f"[{self.name}] ok", "usage": usage}
+
+    def estimate_cost_usd(self, model: str, request: Request) -> float:
+        return self.price_usd
+
+
+def month_start(now: datetime) -> datetime:
+    return now.astimezone(UTC).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+class Gateway:
+    def __init__(
+        self,
+        providers: list[Provider],
+        routes: dict[str, list[Target]],
+        ledger: Ledger,
+        settings: SettingsRegistry,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    ) -> None:
+        self._providers = {p.name: p for p in providers}
+        self._routes, self._ledger, self._settings, self._clock = routes, ledger, settings, clock
+        for role, targets in routes.items():
+            for t in targets:
+                if t.provider not in self._providers:
+                    raise ValueError(f"route {role}: unknown provider {t.provider}")
+                if not settings.has(provider_cap(t.provider).key):
+                    raise ValueError(f"route {role}: provider {t.provider} has no cap setting (provider_cap)")
+        if not settings.has(TOTAL_CAP):
+            raise ValueError(f"the settings registry lacks {TOTAL_CAP} (GATEWAY_SETTINGS)")
+
+    def _record(self, stage: str, role: str, target: Target, outcome: str, resp: dict, latency_ms: int | None) -> None:
+        record_call(
+            self._ledger,
+            stage=stage,
+            role=role,
+            provider=target.provider,
+            model=target.model,
+            outcome=outcome,
+            latency_ms=latency_ms,
+            at=self._clock(),
+            **billed_fields(resp),
+        )
+
+    def _within_caps(self, target: Target, estimate: float) -> tuple[bool, bool]:
+        """(total cap ok, provider cap ok). Raises when the ledger cannot be read: the caller makes no call."""
+        since = month_start(self._clock())
+        total_cap = self._settings.get(TOTAL_CAP)
+        own_cap = self._settings.get(provider_cap(target.provider).key)
+        total = self._ledger.month_spend(since)
+        own = self._ledger.month_spend(since, target.provider)
+        return (total < total_cap and total + estimate <= total_cap, own < own_cap and own + estimate <= own_cap)
+
+    def generate(self, role: str, stage: str, request: Request) -> Result:
+        """Answer `request` with the first target of `role` that is within its caps and succeeds."""
+        if role not in self._routes:
+            raise GatewayError(f"no route for role {role}")
+        failures: list[str] = []
+        for target in self._routes[role]:
+            provider = self._providers[target.provider]
+            try:
+                total_ok, own_ok = self._within_caps(target, provider.estimate_cost_usd(target.model, request))
+            except Exception as e:  # fail closed: no spend figure, no call
+                raise GatewayError(f"spend check failed, no call made: {e}") from e
+            if not total_ok:
+                self._record(stage, role, target, "refused", {}, None)
+                raise CapExceeded(f"monthly model spend cap {self._settings.get(TOTAL_CAP)} USD reached")
+            if not own_ok:
+                self._record(stage, role, target, "refused", {}, None)
+                failures.append(f"{target.provider}: monthly cap reached")
+                continue
+            started = time.monotonic()
+            try:
+                resp = provider.complete(target.model, request)
+            except FatalProviderError:
+                self._record(stage, role, target, "error", {}, int((time.monotonic() - started) * 1000))
+                raise
+            except Exception as e:  # noqa: BLE001 - recorded, then the next target is tried
+                self._record(stage, role, target, "error", {}, int((time.monotonic() - started) * 1000))
+                failures.append(f"{target.provider}: {type(e).__name__}")
+                continue
+            self._record(stage, role, target, "ok", resp, int((time.monotonic() - started) * 1000))
+            return Result(str(resp.get("text", "")), target.provider, target.model, resp)
+        raise GatewayError(f"every target of {role} failed: {'; '.join(failures)}")

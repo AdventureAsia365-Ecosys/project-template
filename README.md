@@ -24,8 +24,8 @@ Copier asks the day-1 questionnaire:
 | Project name and slug | text | none |
 | Repo layout | single repo; root repo of several; app repo | single repo |
 | Stacks | Python API, Next.js web, Lambda | Python API and Next.js web |
-| Multi-tenant | yes / no (row-level security with FORCE, isolation probe; no fair-share job gate yet) | no |
-| AI features | yes / no (model-call ledger, AI use and prompt registers, eval workflow; no model gateway core yet) | no |
+| Multi-tenant | yes / no (row-level security with FORCE, isolation probe, tenant-scoped connection pool, fair-share job gate) | no |
+| AI features | yes / no (model gateway core with routing, fallback and monthly spend caps; model-call ledger, AI use and prompt registers, eval workflow) | no |
 | Cloud | AWS / none | AWS |
 | Tracker | Linear / GitHub Issues / Jira | Linear |
 | Issue key prefix | text | none (GH for GitHub Issues) |
@@ -52,21 +52,15 @@ releases into the project as a normal PR ([`VERSIONING.md`](VERSIONING.md)).
 | `docs/day-1.md` | The day-1 checklist as a tracked list |
 | `.claude/` | Guardrail hooks (subagents never push, merge, apply or delete; MCP writes blocked for subagents; shell-mistake refusals; optional stop hook and personal-data guard) with their red-team tests, and the generic skills |
 | `.github/` | CI, PR title, docs lint, secret scan (gitleaks, pinned and checksum-verified), workflow lint, release-please, post-deploy verify, optional API contract check and UI smoke; code-health and coverage ratchets |
-| `api/`, `db/`, `web/`, `lambda/`, `infra/` | Skeletons for the chosen stacks. The API's job and settings stores are in-memory; the SQL tables and the claim query are there, the database-backed stores are not |
+| `api/`, `db/`, `web/`, `lambda/`, `infra/` | Skeletons for the chosen stacks. The API's job and settings stores run on Postgres when `DATABASE_URL` is set (in-memory ones for tests); the API CI job runs the integration tests on a throwaway Postgres |
 | `tools/uat/` | A note on the UAT harness (how scenarios are laid out and recorded); no runnable harness yet |
 
-### Not in 1.1.0
+### Not in 1.2.0
 
 The kit design names these parts; this release does not ship them yet. Each one is planned for a later minor
 release (a new optional file or check, [`VERSIONING.md`](VERSIONING.md)) and listed in [`CHANGELOG.md`](CHANGELOG.md).
 
 - Web: a UI kit (shared components) in the web skeleton; `AGENTS.md` only names its path as a project parameter.
-- API: database-backed job and settings stores (the skeleton ships in-memory stores, the SQL tables and the claim
-  query).
-- Multi-tenant: the tenant-scoped connection pool and the fair-share gate that keeps one tenant's jobs from
-  starving the others.
-- AI features: the model gateway core (one client with routing, fallback and caps); only the model-call ledger
-  ships.
 - UAT: a runnable harness under `tools/uat/` (today a README).
 
 ## How this repo works

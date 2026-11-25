@@ -7,8 +7,9 @@ name: Kit CI
 #     line, kept out of this public repo) over the files and over the commit metadata of the whole history (author,
 #     committer, message: a file scan cannot see them); links; Markdown style;
 #   - render: generate the template with five answer sets and run each generated project's checks (the optional parts
-#     exactly when their question is on, the API contract gate with a real oasdiff), then `copier update` a project
-#     generated from the previous release to this tree with no conflict.
+#     exactly when their question is on, the API contract gate with a real oasdiff, the migrations and the API
+#     integration tests on a throwaway Postgres service), then `copier update` a project generated from the previous
+#     release to this tree with no conflict.
 # Secrets: none. Actions pinned by commit SHA. Cost: free standard runners on a public repo.
 on:
   pull_request:
@@ -29,7 +30,7 @@ env:
   OASDIFF_VERSION: 1.33.0
   OASDIFF_SHA256: 43a4e328e2d13ba1552d760aa68d2485c75c5621f309f6ff64ae895188345247
   # The release a generated project is updated from in the render job (the latest tag before this one).
-  UPDATE_FROM: v1.0.0
+  UPDATE_FROM: v1.1.0
 
 jobs:
   tools:
@@ -99,7 +100,15 @@ jobs:
   render:
     name: Render matrix
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -128,7 +137,8 @@ jobs:
         run: |
           git config --global user.name ci && git config --global user.email ci@localhost
           python3 tests/render_matrix.py --venv /tmp/apivenv --actionlint /tmp/actionlint --markdownlint \
-            --oasdiff /tmp/oasdiff --update-from "$UPDATE_FROM"
+            --oasdiff /tmp/oasdiff --update-from "$UPDATE_FROM" \
+            --pg-dsn postgresql://postgres:postgres@localhost:5432/postgres
 
   workflows:
     name: Workflow lint

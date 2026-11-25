@@ -1,0 +1,64 @@
+"""Tenant-scoped connections and the fair-share job setting.
+
+Every query on tenant data runs inside `TenantScopedPool.transaction(tenant_id)`: one transaction with
+`SET LOCAL app.tenant_id` (and the app role, when the pool's login role is another one), so row-level security with
+FORCE (migration 001) shows and accepts only that tenant's rows, and the setting ends with the transaction: a
+pooled connection never carries a tenant into the next request. There is no other way to get a connection from
+this pool, and a missing or malformed tenant is refused before any query runs. psycopg refuses a commit inside the
+block; a session without the setting sees no tenant row and may write none (the policies fail closed).
+
+Background jobs are not tenant tables: the worker claims across tenants, and the fair-share gate keeps one tenant
+from holding more than `jobs.max_running_per_tenant` running jobs at once (jobs.py).
+"""
+
+from __future__ import annotations
+
+import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
+from typing import Any
+
+from psycopg import sql
+
+from .settings_registry import Setting
+
+TENANCY_SETTINGS: tuple[Setting, ...] = (
+    Setting(
+        "jobs.max_running_per_tenant",
+        2,
+        1,
+        100,
+        "Running jobs one tenant may hold at once; its other jobs wait while others' jobs run.",
+    ),
+)
+
+
+class NoTenantError(RuntimeError):
+    """A tenant-scoped query was asked for without a valid tenant id."""
+
+
+def tenant_uuid(tenant_id: object) -> uuid.UUID:
+    if isinstance(tenant_id, uuid.UUID):
+        return tenant_id
+    if not isinstance(tenant_id, str) or not tenant_id.strip():
+        raise NoTenantError("a tenant id is required for this query")
+    try:
+        return uuid.UUID(tenant_id)
+    except ValueError as e:
+        raise NoTenantError("the tenant id is not a UUID") from e
+
+
+class TenantScopedPool:
+    """Wraps a connection pool; hands out connections only inside a tenant transaction."""
+
+    def __init__(self, pool: Any, role: str | None = None) -> None:
+        self._pool, self._role = pool, role
+
+    @contextmanager
+    def transaction(self, tenant_id: object) -> Iterator[Any]:
+        tenant = tenant_uuid(tenant_id)
+        with self._pool.connection() as conn, conn.transaction():
+            if self._role:
+                conn.execute(sql.SQL("SET LOCAL ROLE {}").format(sql.Identifier(self._role)))
+            conn.execute("SELECT set_config('app.tenant_id', %s, true)", (str(tenant),))
+            yield conn
