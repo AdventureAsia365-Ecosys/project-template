@@ -94,8 +94,8 @@ The generic skills read their values here; a skill names a parameter, never a va
 {%- if has_web %}
 | Web apps and preview hosts | `web/`: <preview host pattern> |
 | Sign-in for automated checks | <test account kind; never a real person's account> |
-| UI kit path | `web/app/_kit/` (import from `@/app/_kit`; gallery at `/kit`; `web/lib/kitLint.ts` fails `npm test` on ad-hoc styles) |
-| UAT harness | `tools/uat/`: scenarios in `tools/uat/scenarios/`, `npm run uat -- --base-url <url>`, takes and report index in `tools/uat/out/` (`.github/workflows/uat.yml` on a deployed URL) |
+| UI kit path | `web/app/_kit/` (import from `@/app/_kit`; gallery at `/kit`; `web/lib/kitLint.ts` fails `npm test` on ad-hoc styles beyond `web/kit-lint-baseline.json`) |
+| UAT harness | `tools/uat/`: scenarios in `tools/uat/scenarios/`, `npm run uat -- --base-url <url>`, takes and report index in `tools/uat/out/` (`.github/workflows/uat.yml` on a deployed URL); a password or code only through `value_env` (repository secrets `UAT_*`), never in a scenario file |
 {%- if has_ui_smoke %}
 | UI smoke routes | `web/e2e/smoke-routes.json` (`.github/workflows/ui-smoke.yml` after each web deploy) |
 {%- endif %}

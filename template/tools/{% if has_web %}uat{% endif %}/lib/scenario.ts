@@ -11,13 +11,18 @@
 //   "steps": [
 //     { "caption": "What the user does and should see",
 //       "action": { "goto": "/path" },        // optional; one of goto, click, fill, press, select, check
-//       "expect": [ { "visible": { "role": "heading", "name": "Orders" } } ] }   // at least one per step
+//       "expect": [ { "visible": { "role": "heading", "name": "Orders" } } ],  // at least one per step
+//       "secret": true }                     // optional: mask the action's field (automatic with value_env)
 //   ]
 // }
 // Targets: { "role": <ARIA role>, "name"?: <accessible name>, "exact"?: bool } | { "text": ... } | { "label": ... }
 //          | { "testId": ... } | { "css": ... }. Prefer role and name: they survive layout changes.
 // Actions: { "goto": "/path" } | { "click": T } | { "fill": T, "value": "..." } | { "press": T, "key": "Enter" }
 //          | { "select": T, "value": "..." } | { "check": T }.
+// Secrets (a test account's password, a one-time code): never a literal in the committed file. A fill or select takes
+// { "value_env": "UAT_<NAME>" } instead of "value": the runner reads it from the environment (a missing variable is a
+// bad run, exit 2), masks the field in every screenshot, shows its characters as dots in the video, and keeps the value
+// out of result.json, the captions and the step log.
 // Expectations: { "visible": T } | { "hidden": T } | { "contains": "...", "in": T } | { "count": n, "of": T }
 //          | { "url_contains": "..." }.
 
@@ -31,9 +36,9 @@ export type Target =
 export type Action =
   | { kind: "goto"; path: string }
   | { kind: "click"; target: Target }
-  | { kind: "fill"; target: Target; value: string }
+  | { kind: "fill"; target: Target; value?: string; valueEnv?: string }
   | { kind: "press"; target: Target; key: string }
-  | { kind: "select"; target: Target; value: string }
+  | { kind: "select"; target: Target; value?: string; valueEnv?: string }
   | { kind: "check"; target: Target };
 
 export type Expectation =
@@ -43,7 +48,8 @@ export type Expectation =
   | { kind: "count"; target: Target; equals: number }
   | { kind: "url_contains"; text: string };
 
-export type Step = { caption: string; action?: Action; expect: Expectation[] };
+/** `secret`: the action's field is masked in screenshots and its value redacted (set by value_env or "secret": true). */
+export type Step = { caption: string; action?: Action; expect: Expectation[]; secret: boolean };
 
 export type Scenario = {
   title: string;
@@ -118,6 +124,8 @@ export function parsePath(v: unknown, where: string): string {
 }
 
 const ACTIONS = ["goto", "click", "fill", "press", "select", "check"] as const;
+// Only UAT_* names: a scenario cannot read the runner's other variables (a CI token, a cloud key).
+const ENV_NAME = /^UAT_[A-Z0-9_]+$/;
 
 export function parseAction(v: unknown, where: string): Action {
   if (!isObj(v)) fail(where, `an action is an object with one of ${ACTIONS.join(", ")}`);
@@ -129,10 +137,20 @@ export function parseAction(v: unknown, where: string): Action {
       onlyKeys(v, ["goto"], where);
       return { kind, path: parsePath(v.goto, `${where}.goto`) };
     case "fill":
-    case "select":
-      onlyKeys(v, [kind, "value"], where);
+    case "select": {
+      onlyKeys(v, [kind, "value", "value_env"], where);
+      const target = parseTarget(v[kind], `${where}.${kind}`);
+      if (("value" in v) === ("value_env" in v)) fail(where, `a ${kind} takes exactly one of value, value_env`);
+      if ("value_env" in v) {
+        const name = v.value_env;
+        if (typeof name !== "string" || !ENV_NAME.test(name)) {
+          fail(`${where}.value_env`, "names an environment variable UAT_<NAME> (capital letters, digits, _)");
+        }
+        return { kind, target, valueEnv: name };
+      }
       if (typeof v.value !== "string") fail(`${where}.value`, "needs a string");
-      return { kind, target: parseTarget(v[kind], `${where}.${kind}`), value: v.value };
+      return { kind, target, value: v.value };
+    }
     case "press":
       onlyKeys(v, ["press", "key"], where);
       return { kind, target: parseTarget(v.press, `${where}.press`), key: text(v.key, `${where}.key`) };
@@ -166,9 +184,13 @@ export function parseExpectation(v: unknown, where: string): Expectation {
 
 function parseStep(v: unknown, where: string): Step {
   if (!isObj(v)) fail(where, "a step is an object");
-  onlyKeys(v, ["caption", "action", "expect"], where);
-  const step: Step = { caption: text(v.caption, `${where}.caption`), expect: [] };
+  onlyKeys(v, ["caption", "action", "expect", "secret"], where);
+  const step: Step = { caption: text(v.caption, `${where}.caption`), expect: [], secret: false };
   if (v.action !== undefined) step.action = parseAction(v.action, `${where}.action`);
+  if (v.secret !== undefined && typeof v.secret !== "boolean") fail(`${where}.secret`, "needs true or false");
+  const valued = step.action?.kind === "fill" || step.action?.kind === "select";
+  if (v.secret === true && !valued) fail(`${where}.secret`, "masks the field of a fill or select action");
+  step.secret = v.secret === true || (valued && "valueEnv" in step.action!);
   if (!Array.isArray(v.expect) || v.expect.length === 0) {
     fail(`${where}.expect`, "every step needs at least one expectation (a failed one fails the take)");
   }
@@ -197,6 +219,37 @@ export function parseScenario(raw: unknown): Scenario {
   const steps = raw.steps.map((s, i) => parseStep(s, `steps[${i}]`));
   if (steps[0].action?.kind !== "goto") fail("steps[0].action", "the first step opens a page (goto)");
   return { title, viewport, stepTimeoutMs, allowConsoleErrors: raw.allow_console_errors === true, stepHoldMs, colorScheme, steps };
+}
+
+/** The environment variables the scenario's value_env steps read, in step order, each once. */
+export function envNames(scenario: Scenario): string[] {
+  const names: string[] = [];
+  for (const step of scenario.steps) {
+    const a = step.action;
+    if ((a?.kind === "fill" || a?.kind === "select") && a.valueEnv && !names.includes(a.valueEnv)) names.push(a.valueEnv);
+  }
+  return names;
+}
+
+/** The value each fill or select step types, by step index, read before the browser starts: a value_env variable that
+ * is unset or empty fails the run (exit 2) instead of typing an empty password. `secrets` lists every value of a
+ * secret step, for redaction. */
+export function resolveValues(
+  scenario: Scenario,
+  env: Record<string, string | undefined>,
+): { values: Map<number, string>; secrets: string[] } {
+  const missing = envNames(scenario).filter((n) => !env[n]);
+  if (missing.length) throw new Error(`environment variable(s) not set: ${missing.join(", ")} (value_env steps)`);
+  const values = new Map<number, string>();
+  const secrets: string[] = [];
+  scenario.steps.forEach((step, i) => {
+    const a = step.action;
+    if (a?.kind !== "fill" && a?.kind !== "select") return;
+    const value = a.valueEnv ? (env[a.valueEnv] as string) : (a.value ?? "");
+    values.set(i, value);
+    if (step.secret && value && !secrets.includes(value)) secrets.push(value);
+  });
+  return { values, secrets };
 }
 
 /** "role button named Save", for step logs and failure messages. */

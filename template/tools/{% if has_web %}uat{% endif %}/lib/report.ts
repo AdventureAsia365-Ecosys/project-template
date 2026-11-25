@@ -134,3 +134,13 @@ export function readTake(raw: unknown): TakeResult | null {
   if (typeof t.take !== "string" || !Array.isArray(t.steps) || (t.verdict !== "pass" && t.verdict !== "fail")) return null;
   return t as TakeResult;
 }
+
+/** `text` with every secret value replaced by [secret]: an error or a console message can echo what was typed. */
+export function redact(text: string, secrets: string[]): string {
+  return secrets.filter(Boolean).reduce((out, s) => out.split(s).join("[secret]"), text);
+}
+
+/** The step as it is kept (result.json, captions, step log): its error redacted. */
+export function keptStep(step: StepResult, secrets: string[]): StepResult {
+  return step.error === undefined ? step : { ...step, error: redact(step.error, secrets) };
+}

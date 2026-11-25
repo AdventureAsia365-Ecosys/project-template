@@ -2,7 +2,8 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
-import { describeTarget, parseBaseUrl, parseScenario } from "./scenario.ts";
+import { keptStep, type TakeResult } from "./report.ts";
+import { describeTarget, envNames, parseBaseUrl, parseScenario, resolveValues } from "./scenario.ts";
 
 const base = () => ({
   title: "Add a sample order",
@@ -49,7 +50,12 @@ test("bad rows fail with their path", () => {
     [(s) => ((s.steps[1].expect[0] as Record<string, unknown>).in = { role: "Button" }), /steps\[1\]\.expect\[0\]\.in\.role/],
     [(s) => ((s.steps[1].expect[0] as Record<string, unknown>).in = { css: "a", text: "b" }), /exactly one/],
     [(s) => ((s.steps[1].expect[1] as Record<string, unknown>).count = -1), /expect\[1\]\.count/],
-    [(s) => ((s.steps[1] as Record<string, unknown>).action = { fill: { label: "Name" } }), /action\.value/],
+    [(s) => ((s.steps[1] as Record<string, unknown>).action = { fill: { label: "Name" } }), /exactly one of value, value_env/],
+    [(s) => ((s.steps[1] as Record<string, unknown>).action = { fill: { label: "Name" }, value: "x", value_env: "UAT_X" }), /exactly one of value, value_env/],
+    [(s) => ((s.steps[1] as Record<string, unknown>).action = { fill: { label: "Name" }, value_env: "GITHUB_TOKEN" }), /value_env: names an environment variable UAT_/],
+    [(s) => ((s.steps[1] as Record<string, unknown>).action = { fill: { label: "Name" }, value: 7 }), /action\.value: needs a string/],
+    [(s) => ((s.steps[0] as Record<string, unknown>).secret = true), /secret: masks the field of a fill or select/],
+    [(s) => ((s.steps[1] as Record<string, unknown>).secret = "yes"), /secret: needs true or false/],
     [(s) => ((s.steps[1] as Record<string, unknown>).action = { hover: { label: "Name" } }), /exactly one of goto/],
     [(s) => (s.step_timeout_ms = 10), /step_timeout_ms/],
     [(s) => ((s as Record<string, unknown>).step_hold_ms = -5), /step_hold_ms/],
@@ -76,4 +82,63 @@ test("the base URL is a site root", () => {
   assert.throws(() => parseBaseUrl("ftp://x.example.test"), /http or https/);
   assert.throws(() => parseBaseUrl("https://x.example.test/app"), /site root/);
   assert.throws(() => parseBaseUrl("not a url"), /not a URL/);
+});
+
+// A sign-in walk: the password comes from the environment, never from the file. TYPED is an invented value.
+const TYPED = "Invented-Pass-42";
+const signIn = () => ({
+  title: "Sign in with the test account",
+  viewport: { width: 1280, height: 800 },
+  step_timeout_ms: 5000,
+  steps: [
+    { caption: "Open the sign-in page", action: { goto: "/sign-in" }, expect: [{ visible: { role: "heading", name: "Sign in" } }] },
+    { caption: "Type the e-mail", action: { fill: { label: "E-mail" }, value: "tester@example.test" }, expect: [{ visible: { label: "Password" } }] },
+    {
+      caption: "Type the password and sign in",
+      action: { fill: { label: "Password" }, value_env: "UAT_PASSWORD" },
+      expect: [{ visible: { role: "button", name: "Sign in" } }],
+    },
+    { caption: "Type the code", action: { fill: { label: "Code" }, value: "000000" }, secret: true, expect: [{ url_contains: "/sign-in" }] },
+  ],
+});
+
+test("a value_env step is secret and reads its value from the environment", () => {
+  const s = parseScenario(signIn());
+  assert.deepEqual(s.steps[2].action, { kind: "fill", target: { label: "Password" }, valueEnv: "UAT_PASSWORD" });
+  assert.deepEqual(s.steps.map((st) => st.secret), [false, false, true, true]);
+  assert.deepEqual(envNames(s), ["UAT_PASSWORD"]);
+  const { values, secrets } = resolveValues(s, { UAT_PASSWORD: TYPED });
+  assert.equal(values.get(1), "tester@example.test");
+  assert.equal(values.get(2), TYPED);
+  assert.deepEqual(secrets, [TYPED, "000000"]);
+});
+
+test("a value_env variable that is unset or empty stops the run before the browser", () => {
+  const s = parseScenario(signIn());
+  assert.throws(() => resolveValues(s, {}), /not set: UAT_PASSWORD/);
+  assert.throws(() => resolveValues(s, { UAT_PASSWORD: "" }), /not set: UAT_PASSWORD/);
+});
+
+test("a value_env step never puts its value into a take result", () => {
+  const s = parseScenario(signIn());
+  const { secrets } = resolveValues(s, { UAT_PASSWORD: TYPED });
+  // A failing fill whose error and console message echo what was typed.
+  const step = keptStep(
+    { n: 3, caption: s.steps[2].caption, verdict: "fail", startMs: 0, endMs: 10, error: `console error: bad value "${TYPED}"; code 000000` },
+    secrets,
+  );
+  const take: TakeResult = {
+    take: "20310102-030405-02-sign-in",
+    scenario: "02-sign-in",
+    title: s.title,
+    baseUrl: "https://preview.example.test",
+    commit: "abc1234",
+    startedAt: "2031-01-02T03:04:05Z",
+    verdict: "fail",
+    steps: [step],
+  };
+  const json = JSON.stringify(take);
+  assert.ok(!json.includes(TYPED), json);
+  assert.ok(!json.includes("000000"), json);
+  assert.match(step.error ?? "", /bad value "\[secret\]"; code \[secret\]/);
 });

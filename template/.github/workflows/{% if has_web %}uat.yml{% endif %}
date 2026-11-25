@@ -2,8 +2,9 @@ name: UAT
 # Plays the UAT scenarios of tools/uat/scenarios/ on a deployed URL (tools/uat/run.ts): an assertion on every step, a
 # screenshot per step, optionally a video, and the report index. The take folders are kept as a run artifact for the
 # UAT report. On demand only: record for a business sign-off, a pilot onboarding or a drill, not for routine changes.
-# Secrets: none (pages behind sign-in need a test account first, AGENTS.md). Cost: one standard runner for a few
-# minutes per run.
+# Secrets: optional repository secrets UAT_USERNAME and UAT_PASSWORD, a test account's sign-in (never a real person's),
+# read by value_env steps only (tools/uat/README.md); add another UAT_* name to the step's env the same way. Unset, they
+# are empty and a scenario that reads one stops with exit 2. Cost: one standard runner for a few minutes per run.
 on:
   workflow_dispatch:
     inputs:
@@ -57,6 +58,9 @@ jobs:
       - name: Install the Playwright browser (chromium)
         run: npx playwright install --with-deps chromium
       - name: Play the scenarios
+        env:
+          UAT_USERNAME: ${{ secrets.UAT_USERNAME }}
+          UAT_PASSWORD: ${{ secrets.UAT_PASSWORD }}
         run: |
           args=(--base-url "$BASE_URL")
           if [ -n "$SCENARIO" ]; then args+=(--scenario "$SCENARIO"); fi

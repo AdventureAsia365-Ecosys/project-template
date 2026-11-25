@@ -14,6 +14,7 @@ import { chromium, type Browser, type Locator, type Page } from "playwright";
 import {
   captionsVtt,
   indexHtml,
+  keptStep,
   readTake,
   screenshotName,
   takeId,
@@ -25,6 +26,7 @@ import {
   describeTarget,
   parseBaseUrl,
   parseScenario,
+  resolveValues,
   type Action,
   type Expectation,
   type Scenario,
@@ -54,7 +56,12 @@ async function waitUntil(check: () => Promise<boolean>, timeoutMs: number, what:
   }
 }
 
-async function act(page: Page, a: Action, timeout: number): Promise<void> {
+/** Show a secret field's characters as dots, so the video and later screenshots never show what is typed. */
+async function hideCharacters(target: Locator, timeout: number): Promise<void> {
+  await target.evaluate((el) => (el as HTMLElement).style.setProperty("-webkit-text-security", "disc"), undefined, { timeout });
+}
+
+async function act(page: Page, a: Action, timeout: number, value: string, secret: boolean): Promise<void> {
   if (a.kind === "goto") {
     const response = await page.goto(a.path, { waitUntil: "load", timeout });
     const status = response?.status() ?? 0;
@@ -63,9 +70,11 @@ async function act(page: Page, a: Action, timeout: number): Promise<void> {
   }
   const target = locate(page, a.target).first();
   if (a.kind === "click") await target.click({ timeout });
-  else if (a.kind === "fill") await target.fill(a.value, { timeout });
-  else if (a.kind === "press") await target.press(a.key, { timeout });
-  else if (a.kind === "select") await target.selectOption(a.value, { timeout });
+  else if (a.kind === "fill") {
+    if (secret) await hideCharacters(target, timeout);
+    await target.fill(value, { timeout });
+  } else if (a.kind === "press") await target.press(a.key, { timeout });
+  else if (a.kind === "select") await target.selectOption(value, { timeout });
   else await target.check({ timeout });
 }
 
@@ -103,7 +112,7 @@ async function playTake(
   browser: Browser,
   name: string,
   scenario: Scenario,
-  opts: { baseUrl: string; outDir: string; video: boolean },
+  opts: { baseUrl: string; outDir: string; video: boolean; values: Map<number, string>; secrets: string[] },
 ): Promise<TakeResult> {
   const started = new Date();
   const take = takeId(name, started);
@@ -123,6 +132,7 @@ async function playTake(
   });
   const t0 = Date.now();
   const steps: StepResult[] = [];
+  const masks: Locator[] = []; // the secret fields filled so far: masked in every screenshot after
   let failed = false;
   for (const [i, step] of scenario.steps.entries()) {
     const n = i + 1;
@@ -134,7 +144,9 @@ async function playTake(
     const errorsBefore = errors.length;
     let error: string | undefined;
     try {
-      if (step.action) await act(page, step.action, scenario.stepTimeoutMs);
+      // A secret field is masked from this step's screenshot on, even when the fill fails halfway.
+      if (step.secret && step.action && step.action.kind !== "goto") masks.push(locate(page, step.action.target).first());
+      if (step.action) await act(page, step.action, scenario.stepTimeoutMs, opts.values.get(i) ?? "", step.secret);
       for (const e of step.expect) await expectOne(page, e, scenario.stepTimeoutMs);
       if (!scenario.allowConsoleErrors && errors.length > errorsBefore) error = errors.slice(errorsBefore).join("; ");
     } catch (err) {
@@ -142,10 +154,14 @@ async function playTake(
     }
     if (!error && scenario.stepHoldMs > 0) await page.waitForTimeout(scenario.stepHoldMs); // on screen for the video
     const shot = screenshotName(n, step.caption);
-    await page.screenshot({ path: path.join(dir, shot) }).catch(() => undefined);
+    await page.screenshot({ path: path.join(dir, shot), mask: masks }).catch(() => undefined);
     failed = error !== undefined;
-    steps.push({ n, caption: step.caption, verdict: failed ? "fail" : "pass", startMs, endMs: Date.now() - t0, error, screenshot: shot });
-    console.log(`${failed ? "FAIL" : "ok  "} ${name} step ${n}: ${step.caption}${error ? ` -- ${error}` : ""}`);
+    const kept = keptStep(
+      { n, caption: step.caption, verdict: failed ? "fail" : "pass", startMs, endMs: Date.now() - t0, error, screenshot: shot },
+      opts.secrets,
+    );
+    steps.push(kept);
+    console.log(`${failed ? "FAIL" : "ok  "} ${name} step ${n}: ${step.caption}${kept.error ? ` -- ${kept.error}` : ""}`);
   }
   const video = page.video();
   await context.close();
@@ -202,10 +218,15 @@ async function main(): Promise<number> {
   const names = values.scenario?.length
     ? values.scenario.map((s) => path.basename(s, ".json"))
     : readdirSync(scenarioDir).filter((f) => f.endsWith(".json")).map((f) => path.basename(f, ".json")).sort();
-  // Every file is checked before the browser starts: a bad file fails the run, not a take halfway.
+  // Every file, and every value_env variable it reads, is checked before the browser starts: a bad file or a missing
+  // variable fails the run (exit 2), not a take halfway.
   const scenarios = names.map((name) => {
     try {
-      return { name, scenario: parseScenario(JSON.parse(readFileSync(path.join(scenarioDir, `${name}.json`), "utf8"))) };
+      const scenario = parseScenario(JSON.parse(readFileSync(path.join(scenarioDir, `${name}.json`), "utf8")));
+      if (values.video && scenario.steps.some((s) => s.secret && s.action?.kind === "select")) {
+        throw new Error("a secret select shows its chosen option in a video: record this scenario without --video");
+      }
+      return { name, scenario, ...resolveValues(scenario, process.env) };
     } catch (err) {
       throw new Error(`scenarios/${name}.json: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -215,8 +236,8 @@ async function main(): Promise<number> {
   const browser = await chromium.launch({ headless: !values.headed });
   const results: TakeResult[] = [];
   try {
-    for (const { name, scenario } of scenarios) {
-      results.push(await playTake(browser, name, scenario, { baseUrl, outDir, video: values.video }));
+    for (const { name, scenario, values: typed, secrets } of scenarios) {
+      results.push(await playTake(browser, name, scenario, { baseUrl, outDir, video: values.video, values: typed, secrets }));
     }
   } finally {
     await browser.close();

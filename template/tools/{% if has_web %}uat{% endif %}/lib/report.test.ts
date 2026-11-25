@@ -5,7 +5,9 @@ import {
   captionsVtt,
   escapeHtml,
   indexHtml,
+  keptStep,
   readTake,
+  redact,
   screenshotName,
   takeId,
   takeVerdict,
@@ -72,4 +74,11 @@ test("only take results are read back", () => {
   assert.equal(readTake({ take: "x", steps: [], verdict: "maybe" }), null);
   assert.equal(readTake(["x"]), null);
   assert.equal(readTake(null), null);
+});
+
+test("secrets are redacted from kept text", () => {
+  assert.equal(redact("typed Invented-Pass-42 twice: Invented-Pass-42", ["Invented-Pass-42"]), "typed [secret] twice: [secret]");
+  assert.equal(redact("nothing to hide", ["", "Invented-Pass-42"]), "nothing to hide");
+  const s = step(1, "pass", 0, 10);
+  assert.equal(keptStep(s, ["Invented-Pass-42"]), s);
 });
