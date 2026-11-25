@@ -26,7 +26,10 @@ flag) is refused. A script or SQL file the command runs that cannot be read (mis
 
 How it reads: heredoc bodies and the shell words of the command (quotes removed; a `bash -c '...'` body is read as a
 command again), the files given to a client (`-f`, `--file`, `< file`, any `*.sql` word of a client command) and the
-Python scripts run with a driver (string literals only, read with `ast`). The SQL
+Python scripts run that import a driver (an `import` or `from ... import` of a driver_markers module, or
+`importlib.import_module` / `__import__` of one; string literals only, read with `ast`; a file that does not parse
+counts when its text names a driver). A driver name in a comment, a docstring or a string is not an import, so this
+hook's own files and its test run. The SQL
 reader drops comments and blanks string literals in one left-to-right pass, so `'--'` cannot hide the rest of a
 statement; dollar-quoted bodies (DO blocks, functions) are read as SQL too. Static reading, so a heuristic: SQL
 built from pieces in separate variables, read from a file at run time, or sent by another program is not seen; the
@@ -306,6 +309,33 @@ def python_strings(code: str) -> list[str]:
     return out
 
 
+def is_driver_module(name: str, markers: list[str]) -> bool:
+    return any(name == m or name.startswith(m) for m in markers)
+
+
+def imports_driver(code: str, markers: list[str]) -> bool:
+    """True when Python code imports a database driver; the raw text decides when the code does not parse."""
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError):
+        return any(m in code for m in markers)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import) and any(is_driver_module(a.name, markers) for a in node.names):
+            return True
+        if isinstance(node, ast.ImportFrom) and node.module:
+            # `from mysql import connector` names the driver only with the imported name
+            names = [node.module] + [f"{node.module}.{a.name}" for a in node.names]
+            if any(is_driver_module(n, markers) for n in names):
+                return True
+        if isinstance(node, ast.Call) and node.args and isinstance(node.args[0], ast.Constant):
+            fn = node.func
+            fname = fn.attr if isinstance(fn, ast.Attribute) else fn.id if isinstance(fn, ast.Name) else ""
+            arg = node.args[0].value
+            if fname in ("import_module", "__import__") and isinstance(arg, str) and is_driver_module(arg, markers):
+                return True
+    return False
+
+
 def check_file(path: Path, rules: Rules, cfg: dict) -> None:
     try:
         if path.stat().st_size > int(cfg["max_script_bytes"]):
@@ -385,7 +415,7 @@ def check_command(command: str, cfg: dict, cwd: Path = ROOT, depth: int = 0) -> 
         if script and script.endswith(".py") and "-c" not in words[i + 1 : i + 2]:
             path = (cwd / script) if not os.path.isabs(script) else Path(script)
             if path.is_file():
-                if any(m in path.read_text(encoding="utf-8", errors="replace") for m in markers):
+                if imports_driver(path.read_text(encoding="utf-8", errors="replace"), markers):
                     check_file(path, rules, cfg)
             elif client or driver_text:
                 raise Refused(f"cannot read {script} to check it (write the script in one call, run it in the next)")

@@ -7,6 +7,8 @@ the optional parts off. For each one:
   - no unrendered Jinja left in any file or path;
   - the optional parts (stop hook, personal-data guard, API contract check, UI smoke) are there exactly when their
     question says so, and the hooks are registered in .claude/settings.json;
+  - the hook settings files (stop-open-work.json, pii-guard.json) equal their hook's DEFAULTS in a fresh project (the
+    project's own tests check only their shape, since the project edits them);
   - the generated fast checks: links, resource-ID lint, code health, the hook settings test;
   - the stack checks the variant has: API ruff + pytest (one shared virtualenv), Lambda tests, web unit tests
     (node --test, no install), terraform fmt, actionlint over the generated workflows and markdownlint (each when
@@ -143,6 +145,28 @@ def optional_parts(project: Path, want: dict[str, bool]) -> list[str]:
     return bad
 
 
+HOOK_SETTINGS = {"stop-open-work.json": "stop_open_work", "pii-guard.json": "pii_guard"}
+
+
+def settings_match_defaults(project: Path) -> list[str]:
+    """A fresh project's hook settings files equal their hook's DEFAULTS (the project's own tests only check the shape,
+    because the project edits these files)."""
+    bad = []
+    hooks = project / ".claude" / "hooks"
+    for name, module in HOOK_SETTINGS.items():
+        if not (hooks / name).is_file():
+            continue
+        code = (
+            "import json, sys; sys.path.insert(0, sys.argv[1]); m = __import__(sys.argv[2]); "
+            "s = json.load(open(sys.argv[3], encoding='utf-8')); s.pop('_comment', None); "
+            "sys.exit(0 if s == json.loads(json.dumps(m.DEFAULTS)) else 1)"
+        )
+        p = subprocess.run([sys.executable, "-c", code, str(hooks), module, str(hooks / name)], capture_output=True, text=True)
+        if p.returncode:
+            bad.append(f"{name} differs from {module}.DEFAULTS {p.stderr.strip()[-200:]}")
+    return bad
+
+
 def oasdiff_check(project: Path, venv: Path, oasdiff: str) -> tuple[bool, str]:
     """The real gate: the exported document against itself passes; with a route removed it fails."""
     work = Path(tempfile.mkdtemp(prefix="oasdiff-"))
@@ -269,6 +293,9 @@ def main(argv: list[str] | None = None) -> int:
         bad = optional_parts(dest, EXPECT[name])
         print(f"[{name}] {'ok  ' if not bad else 'FAIL'} optional parts match the answers {bad[:5]}")
         failures += bool(bad)
+        drift = settings_match_defaults(dest)
+        print(f"[{name}] {'ok  ' if not drift else 'FAIL'} hook settings files equal the code defaults {drift[:5]}")
+        failures += bool(drift)
         if a.oasdiff and a.venv and (dest / ".github/scripts/openapi_breaking.sh").is_file():
             ok, msg = oasdiff_check(dest, a.venv, a.oasdiff)
             print(f"[{name}] {'ok  ' if ok else 'FAIL'} api contract with oasdiff {msg}")

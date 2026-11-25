@@ -12,10 +12,11 @@ All notable changes of the template. Written by release-please from the Conventi
   message asks the user nothing. It nudges once per turn; settings in `.claude/hooks/stop-open-work.json`; red-team
   tests in `test_stop_open_work.py`.
 - Personal-data guard (question `pii_guard`, on by default): a PreToolUse hook on shell commands that refuses SQL
-  which would print personal columns, a star or a whole row (`psql -c`, `-f` files, heredocs, Python scripts that use
+  which would print personal columns, a star or a whole row (`psql -c`, `-f` files, heredocs, Python scripts that import
   a database driver; counts and `IS NULL` tests pass). The tables and columns are listed in
   `.claude/hooks/pii-guard.json`, with a conservative default (common personal column names, star reads refused on
-  every table); red-team tests in `test_pii_guard.py`.
+  every table); red-team tests in `test_pii_guard.py`. The project edits both hook settings files: its tests check
+  their shape, and the render matrix checks that a fresh project's files equal the code defaults.
 - API contract check (question `api_contract`, Python API projects, on by default): `api-contract.yml` exports the
   OpenAPI document of the base branch and of the PR and compares them with oasdiff (pinned, sha256 checked). A
   breaking change on a public path fails unless the PR is labelled `api-breaking` or has a `type!:` title;

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -130,6 +131,32 @@ class PythonScripts(Base):
         self.assertEqual(guard.main(["--check", str(self.cwd / "ok.py")]), 0)
         self.assertEqual(guard.main(["--check", str(self.cwd / "bad.py")]), 2)
 
+    def test_a_driver_counts_only_when_imported(self):
+        bad_sql = 'Q = "select email from shop.customer"\n'
+        (self.cwd / "named.py").write_text('# reads nothing; asyncpg is only named here\n' + bad_sql, encoding="utf-8")
+        (self.cwd / "from_import.py").write_text("from sqlalchemy import text\n" + bad_sql, encoding="utf-8")
+        (self.cwd / "sub_import.py").write_text("import mysql.connector as db\n" + bad_sql, encoding="utf-8")
+        (self.cwd / "from_parent.py").write_text("from mysql import connector\n" + bad_sql, encoding="utf-8")
+        (self.cwd / "other_mysql.py").write_text("from mysql import helpers\n" + bad_sql, encoding="utf-8")
+        (self.cwd / "dynamic.py").write_text('import importlib\ndb = importlib.import_module("psycopg2")\n' + bad_sql, encoding="utf-8")
+        (self.cwd / "broken.py").write_text("import asyncpg\nif (:\n" + bad_sql, encoding="utf-8")  # does not parse
+        self.assertPasses("python3 named.py")
+        self.assertPasses("python3 other_mysql.py")
+        self.assertRefused(
+            "python3 from_import.py", "python3 sub_import.py", "python3 from_parent.py", "python3 dynamic.py",
+            "python3 broken.py",
+        )
+
+    def test_the_guard_runs_its_own_files(self):
+        project = HERE.parents[1]
+        for command in (
+            "python3 .claude/hooks/test_pii_guard.py",
+            "python3 .claude/hooks/pii_guard.py --check q.sql",
+            "python3 .claude/hooks/pii_guard.py --check scripts/report.py",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(guard.decide(command, CFG, project), command)
+
     def test_unreadable_script_of_a_database_command_is_refused(self):
         self.assertRefused("cat > new.py <<'EOF'\nimport asyncpg\nEOF\npython3 new.py")
         self.assertPasses("python3 missing.py")  # not a database command
@@ -146,10 +173,26 @@ class OtherCommands(Base):
 
 
 class Settings(Base):
-    def test_shipped_settings_equal_the_defaults(self):
+    def test_shipped_settings_have_the_right_shape(self):
+        # The project edits pii-guard.json (day 1: personal_tables from the privacy register), so this checks its
+        # shape, not its values. The kit's render matrix checks that a fresh project's file equals DEFAULTS.
         shipped = json.loads((HERE / "pii-guard.json").read_text(encoding="utf-8"))
         shipped.pop("_comment", None)
-        self.assertEqual(shipped, guard.DEFAULTS)
+        self.assertEqual(set(shipped), set(guard.DEFAULTS))
+        for key, default in guard.DEFAULTS.items():
+            with self.subTest(key=key):
+                self.assertIsInstance(shipped[key], type(default))
+        for table, columns in shipped["personal_tables"].items():
+            self.assertIsInstance(table, str)
+            self.assertIsInstance(columns, list)
+            self.assertTrue(all(isinstance(c, str) and c for c in columns), table)
+        for key in ("personal_columns", "db_clients", "driver_markers"):
+            self.assertTrue(all(isinstance(v, str) and v for v in shipped[key]), key)
+        for tool, flags in shipped["dump_tools"].items():
+            self.assertTrue(isinstance(flags, list) and flags and all(isinstance(f, str) for f in flags), tool)
+        self.assertIn(shipped["star_reads"], {"any", "listed"})
+        self.assertGreater(shipped["max_script_bytes"], 0)
+        self.assertEqual(guard.load_settings(HERE / "pii-guard.json"), shipped)
 
     def test_bad_settings_fall_back(self):
         path = self.cwd / "s.json"
@@ -159,10 +202,16 @@ class Settings(Base):
         self.assertEqual(cfg["star_reads"], "listed")
 
     def test_wrapper_exit_codes(self):
+        # A copy of the hook next to a settings file of the code defaults, so the project's own settings do not matter.
+        hooks = self.cwd / "hook-copy"
+        hooks.mkdir()
+        for name in ("pii-guard.sh", "pii_guard.py"):
+            shutil.copy(HERE / name, hooks / name)
+        (hooks / "pii-guard.json").write_text(json.dumps(guard.DEFAULTS), encoding="utf-8")
         env = {**os.environ, "CLAUDE_PROJECT_DIR": str(self.cwd)}
 
         def run(payload: str) -> int:
-            p = subprocess.run(["bash", str(HERE / "pii-guard.sh")], input=payload, text=True, capture_output=True, env=env)
+            p = subprocess.run(["bash", str(hooks / "pii-guard.sh")], input=payload, text=True, capture_output=True, env=env)
             return p.returncode
 
         self.assertEqual(run(json.dumps({"tool_input": {"command": "psql -c 'select email from shop.customer'"}})), 2)

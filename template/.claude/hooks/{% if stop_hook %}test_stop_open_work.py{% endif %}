@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -34,7 +36,9 @@ class Fixture(unittest.TestCase):
         (self.root / ".tmp-session").mkdir()
         self.checklist = self.root / ".tmp-session" / "S012-checklist.md"
         self.checklist.write_text(CHECKLIST, encoding="utf-8")
-        self.cfg = hook.load_settings(HERE / "stop-open-work.json")
+        # The behaviour tests run on the code defaults: the project tunes stop-open-work.json, and its edits must not
+        # break them. The shape test below covers the project's file.
+        self.cfg = json.loads(json.dumps(hook.DEFAULTS))
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -121,16 +125,35 @@ class SettingsAndProcess(Fixture):
         path.write_text("not json", encoding="utf-8")
         self.assertEqual(hook.load_settings(path), hook.DEFAULTS)
 
-    def test_shipped_settings_equal_the_defaults(self):
+    def test_shipped_settings_have_the_right_shape(self):
+        # The project tunes stop-open-work.json (its checklist path, the age, the markers), so this checks its shape,
+        # not its values. The kit's render matrix checks that a fresh project's file equals DEFAULTS.
         shipped = json.loads((HERE / "stop-open-work.json").read_text(encoding="utf-8"))
         shipped.pop("_comment", None)
-        self.assertEqual(shipped, hook.DEFAULTS)
+        self.assertEqual(set(shipped), set(hook.DEFAULTS))
+        for key, default in hook.DEFAULTS.items():
+            with self.subTest(key=key):
+                self.assertIsInstance(shipped[key], type(default))
+        self.assertTrue(shipped["open_work_files"])
+        self.assertTrue(all(isinstance(g, str) and g for g in shipped["open_work_files"]))
+        for key in ("blocked_markers", "offer_patterns", "approval_patterns"):
+            for pattern in shipped[key]:
+                with self.subTest(key=key, pattern=pattern):
+                    self.assertIsInstance(pattern, str)
+                    re.compile(pattern, re.IGNORECASE)
+        for key in ("max_age_hours", "max_listed", "context_paragraphs"):
+            self.assertGreater(shipped[key], 0, key)
+        self.assertEqual(hook.load_settings(HERE / "stop-open-work.json"), shipped)
 
     def run_hook(self, stdin: str) -> subprocess.CompletedProcess:
+        # A copy of the hook next to a settings file of the code defaults, so the project's own settings do not matter.
+        hooks = self.root / "hook-copy"
+        hooks.mkdir(exist_ok=True)
+        for name in ("stop-open-work.sh", "stop_open_work.py"):
+            shutil.copy(HERE / name, hooks / name)
+        (hooks / "stop-open-work.json").write_text(json.dumps(hook.DEFAULTS), encoding="utf-8")
         env = {**os.environ, "CLAUDE_PROJECT_DIR": str(self.root)}
-        return subprocess.run(
-            ["bash", str(HERE / "stop-open-work.sh")], input=stdin, capture_output=True, text=True, env=env
-        )
+        return subprocess.run(["bash", str(hooks / "stop-open-work.sh")], input=stdin, capture_output=True, text=True, env=env)
 
     def test_wrapper_exit_codes(self):
         refused = self.run_hook(json.dumps({"last_assistant_message": "Done."}))
