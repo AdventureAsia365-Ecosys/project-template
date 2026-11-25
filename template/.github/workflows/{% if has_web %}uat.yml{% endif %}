@@ -1,0 +1,72 @@
+name: UAT
+# Plays the UAT scenarios of tools/uat/scenarios/ on a deployed URL (tools/uat/run.ts): an assertion on every step, a
+# screenshot per step, optionally a video, and the report index. The take folders are kept as a run artifact for the
+# UAT report. On demand only: record for a business sign-off, a pilot onboarding or a drill, not for routine changes.
+# Secrets: none (pages behind sign-in need a test account first, AGENTS.md). Cost: one standard runner for a few
+# minutes per run.
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: Deployed URL to test (https://<host>)
+        required: true
+        type: string
+      scenario:
+        description: Scenario file name without .json (empty for every scenario)
+        required: false
+        type: string
+        default: ""
+      video:
+        description: Record a video of each take
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: uat-${{ inputs.base_url }}
+  cancel-in-progress: false
+
+jobs:
+  uat:
+    name: UAT (Playwright)
+    # Pinned image: a new ubuntu-latest can arrive before Playwright supports browsers on it.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: tools/uat
+    env:
+      BASE_URL: ${{ inputs.base_url }}
+      SCENARIO: ${{ inputs.scenario }}
+      VIDEO: ${{ inputs.video }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - name: The URL is an https URL and the scenario name is a file name
+        run: |
+          case "$BASE_URL" in https://*) ;; *) echo "::error::base_url must start with https://"; exit 1 ;; esac
+          if [ -n "$SCENARIO" ] && ! printf '%s' "$SCENARIO" | grep -Eq '^[0-9]{2}-[a-z0-9-]+$'; then
+            echo "::error::scenario must look like 01-some-walk"; exit 1
+          fi
+      - run: npm install --no-audit --no-fund
+      - name: Install the Playwright browser (chromium)
+        run: npx playwright install --with-deps chromium
+      - name: Play the scenarios
+        run: |
+          args=(--base-url "$BASE_URL")
+          if [ -n "$SCENARIO" ]; then args+=(--scenario "$SCENARIO"); fi
+          if [ "$VIDEO" = "true" ]; then args+=(--video); fi
+          npm run uat -- "${args[@]}"
+      - name: Upload the takes and the report index
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: uat-${{ github.run_id }}
+          path: tools/uat/out/
+          if-no-files-found: warn
+          retention-days: 14

@@ -1,0 +1,47 @@
+{
+  "_comment": "Example scenario: a walk through the UI kit gallery of the generated web app (web/app/kit/page.tsx). Copy it for a feature's sign-off walk: one file per scenario, a caption per step saying what the user does and sees, and at least one expectation per step. Format: lib/scenario.ts. Run: npm run uat -- --base-url <url> --scenario 01-kit-gallery",
+  "title": "Browse the UI kit gallery",
+  "viewport": { "width": 1280, "height": 800 },
+  "step_timeout_ms": 10000,
+  "steps": [
+    {
+      "caption": "Open the UI kit gallery: the page title and the sample table are shown",
+      "action": { "goto": "/kit" },
+      "expect": [
+        { "visible": { "role": "heading", "name": "UI kit", "exact": true } },
+        { "count": 10, "of": { "css": "table tbody tr" } },
+        { "contains": "Showing 1-10 of 47", "in": { "role": "navigation", "name": "Sample items pages" } }
+      ]
+    },
+    {
+      "caption": "Go to the next page of the table: rows 11 to 20 are shown",
+      "action": { "click": { "role": "link", "name": "Next page" } },
+      "expect": [
+        { "url_contains": "page=2" },
+        { "contains": "Showing 11-20 of 47", "in": { "role": "navigation", "name": "Sample items pages" } },
+        { "visible": { "role": "cell", "name": "Sample item 11" } }
+      ]
+    },
+    {
+      "caption": "Open the drawer: the sample item's panel slides in",
+      "action": { "click": { "role": "button", "name": "Open drawer" } },
+      "expect": [{ "visible": { "role": "dialog", "name": "Sample item 01" } }]
+    },
+    {
+      "caption": "Save in the drawer: the panel closes and a confirmation appears",
+      "action": { "click": { "role": "button", "name": "Save" } },
+      "expect": [
+        { "hidden": { "role": "dialog" } },
+        { "contains": "Sample item 01 saved", "in": { "role": "status" } }
+      ]
+    },
+    {
+      "caption": "Open the empty states tab: the empty list message is shown",
+      "action": { "click": { "role": "link", "name": "Empty states" } },
+      "expect": [
+        { "url_contains": "tab=empty" },
+        { "visible": { "role": "heading", "name": "No sample items yet" } }
+      ]
+    }
+  ]
+}

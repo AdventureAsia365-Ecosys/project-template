@@ -1,0 +1,110 @@
+/* Design tokens of the UI kit: neutral colours (no brand), type, spacing, radius and elevation. Light by default; dark
+   follows the system setting unless <html data-theme="light|dark"> forces one. Kit components read only these
+   variables, so a brand is one edit here (the accent pair first). */
+:root {
+  color-scheme: light;
+  --kit-font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --kit-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --kit-text-sm: 0.875rem;
+  --kit-text-md: 1rem;
+  --kit-text-lg: 1.25rem;
+  --kit-text-xl: 1.625rem;
+  --kit-leading: 1.5;
+  --kit-space-1: 0.25rem;
+  --kit-space-2: 0.5rem;
+  --kit-space-3: 0.75rem;
+  --kit-space-4: 1rem;
+  --kit-space-5: 1.5rem;
+  --kit-space-6: 2rem;
+  --kit-radius: 6px;
+  --kit-radius-lg: 10px;
+  --kit-page-width: 72rem;
+  --kit-drawer-width: 28rem;
+
+  --kit-bg: #ffffff;
+  --kit-surface: #f6f6f7;
+  --kit-surface-raised: #ffffff;
+  --kit-border: #dcdce0;
+  --kit-text: #1c1c21;
+  --kit-text-muted: #5d5d68;
+  --kit-accent: #3a5bc7;
+  --kit-accent-hover: #2f4aa6;
+  --kit-accent-text: #ffffff;
+  --kit-focus: #3a5bc7;
+  --kit-overlay: rgb(16 16 20 / 0.45);
+  --kit-shadow: 0 10px 30px rgb(16 16 20 / 0.16);
+
+  --kit-neutral-bg: #ececef;
+  --kit-neutral-fg: #3d3d46;
+  --kit-info-bg: #e5edfb;
+  --kit-info-fg: #23418f;
+  --kit-success-bg: #e3f3e8;
+  --kit-success-fg: #1d5e33;
+  --kit-warning-bg: #fbf0d9;
+  --kit-warning-fg: #6d4a07;
+  --kit-danger-bg: #fbe5e4;
+  --kit-danger-fg: #8f2420;
+  --kit-danger: #c0362f;
+  --kit-danger-hover: #a12d27;
+  --kit-danger-text: #ffffff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --kit-bg: #131316;
+    --kit-surface: #1b1b20;
+    --kit-surface-raised: #222228;
+    --kit-border: #34343c;
+    --kit-text: #ececf0;
+    --kit-text-muted: #a3a3ae;
+    --kit-accent: #86a2f2;
+    --kit-accent-hover: #a3b9f6;
+    --kit-accent-text: #0e1530;
+    --kit-focus: #86a2f2;
+    --kit-overlay: rgb(0 0 0 / 0.6);
+    --kit-shadow: 0 10px 30px rgb(0 0 0 / 0.5);
+    --kit-neutral-bg: #2c2c33;
+    --kit-neutral-fg: #d4d4dc;
+    --kit-info-bg: #1d2a4d;
+    --kit-info-fg: #b9caf8;
+    --kit-success-bg: #173825;
+    --kit-success-fg: #a6dfb8;
+    --kit-warning-bg: #3f2f0c;
+    --kit-warning-fg: #f0d08c;
+    --kit-danger-bg: #461a18;
+    --kit-danger-fg: #f4b4b0;
+    --kit-danger: #e0645d;
+    --kit-danger-hover: #ea827c;
+    --kit-danger-text: #2a0b09;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --kit-bg: #131316;
+  --kit-surface: #1b1b20;
+  --kit-surface-raised: #222228;
+  --kit-border: #34343c;
+  --kit-text: #ececf0;
+  --kit-text-muted: #a3a3ae;
+  --kit-accent: #86a2f2;
+  --kit-accent-hover: #a3b9f6;
+  --kit-accent-text: #0e1530;
+  --kit-focus: #86a2f2;
+  --kit-overlay: rgb(0 0 0 / 0.6);
+  --kit-shadow: 0 10px 30px rgb(0 0 0 / 0.5);
+  --kit-neutral-bg: #2c2c33;
+  --kit-neutral-fg: #d4d4dc;
+  --kit-info-bg: #1d2a4d;
+  --kit-info-fg: #b9caf8;
+  --kit-success-bg: #173825;
+  --kit-success-fg: #a6dfb8;
+  --kit-warning-bg: #3f2f0c;
+  --kit-warning-fg: #f0d08c;
+  --kit-danger-bg: #461a18;
+  --kit-danger-fg: #f4b4b0;
+  --kit-danger: #e0645d;
+  --kit-danger-hover: #ea827c;
+  --kit-danger-text: #2a0b09;
+}
