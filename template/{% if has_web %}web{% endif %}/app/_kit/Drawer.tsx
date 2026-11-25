@@ -1,7 +1,8 @@
 "use client";
 // Drawer: a side panel over the page for a detail or a short form, without leaving the list. Escape, the close button
 // and a click on the overlay close it; focus moves into the panel when it opens and back to where it was on close.
-import { useEffect, useId, useRef, type ReactNode } from "react";
+// Every other HTML attribute (data-testid included) lands on the panel; its dialog role and labels stay the kit's.
+import { useEffect, useId, useRef, type HTMLAttributes, type ReactNode } from "react";
 import { Button } from "./Button";
 
 export function Drawer({
@@ -10,13 +11,15 @@ export function Drawer({
   title,
   children,
   footer,
+  className,
+  ...rest
 }: {
   open: boolean;
   onClose: () => void;
   title: string;
   children: ReactNode;
   footer?: ReactNode;
-}) {
+} & Omit<HTMLAttributes<HTMLElement>, "title" | "children">) {
   const panel = useRef<HTMLElement>(null);
   const titleId = useId();
   // The latest onClose, so a parent that passes a new function on every render does not re-run the focus effect.
@@ -43,7 +46,15 @@ export function Drawer({
   return (
     <>
       <div className="kit-drawer-overlay" onClick={onClose} aria-hidden="true" />
-      <aside className="kit-drawer" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} ref={panel}>
+      <aside
+        {...rest}
+        className={["kit-drawer", className ?? ""].filter(Boolean).join(" ")}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        ref={panel}
+      >
         <header>
           <h2 id={titleId}>{title}</h2>
           <Button variant="ghost" size="sm" onClick={onClose}>

@@ -1,6 +1,7 @@
 // UI kit gallery (/kit): every kit component on one page, with invented rows, so a change to the kit is checked by
 // eye in both themes and by the UAT example scenario (tools/uat/scenarios/01-kit-gallery.json). It shows no project
-// data; keep it, or put it behind the staff sign-in once there is one.
+// data; keep it, or put it behind the staff sign-in once there is one. The data-testid attributes let the example
+// scenario check that the kit components pass HTML attributes through.
 import { Badge, type BadgeTone, EmptyState, PageHeader, Table, Tabs, pageInfo, pageOffset, parsePage } from "@/app/_kit";
 import { DrawerDemo, ToastDemo } from "./GalleryDemos";
 
@@ -46,11 +47,12 @@ export default async function KitGallery({
     <main className="kit-page">
       <PageHeader
         title="UI kit"
+        data-testid="kit-gallery-header"
         description="Every shared component with invented data. Pages build from these only."
         actions={<ToastDemo />}
       />
       <div className="kit-stack">
-        <Tabs label="Gallery sections" tabs={TABS} current={tab} />
+        <Tabs label="Gallery sections" tabs={TABS} current={tab} data-testid="kit-gallery-tabs" />
         {tab === "components" ? (
           <>
             <section className="kit-section" aria-labelledby="kit-badges">
@@ -67,6 +69,7 @@ export default async function KitGallery({
               <h2 id="kit-table">Table with server paging</h2>
               <Table
                 caption="Sample items"
+                data-testid="kit-sample-table"
                 columns={[
                   { key: "name", header: "Name" },
                   { key: "status", header: "Status", render: (r: SampleRow) => <Badge tone={r.tone}>{r.status}</Badge> },
@@ -85,7 +88,7 @@ export default async function KitGallery({
         ) : (
           <section className="kit-section" aria-labelledby="kit-empty">
             <h2 id="kit-empty">Empty state</h2>
-            <EmptyState title="No sample items yet">Items appear here once someone adds the first one.</EmptyState>
+            <EmptyState title="No sample items yet" data-testid="kit-sample-empty">Items appear here once someone adds the first one.</EmptyState>
           </section>
         )}
       </div>

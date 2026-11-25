@@ -16,6 +16,7 @@ export function DrawerDemo() {
         open={open}
         onClose={() => setOpen(false)}
         title="Sample item 01"
+        data-testid="kit-sample-drawer"
         footer={
           <>
             <Button onClick={() => setOpen(false)}>Cancel</Button>

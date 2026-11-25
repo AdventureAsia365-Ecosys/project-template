@@ -1,8 +1,9 @@
 // Table with server paging. The page reads ?page= (parsePage), asks the API or the database for one page of rows and
 // the total, and passes both here; the pager links to the neighbour pages (pageHref keeps the other parameters).
 // Never page on the client over a partial list: the counts and the filters would only see that list.
+// Every other HTML attribute (data-testid included) lands on the wrapper element.
 import Link from "next/link";
-import type { ReactNode } from "react";
+import type { HTMLAttributes, ReactNode } from "react";
 import { EmptyState } from "./EmptyState";
 import { pageHref, pageInfo, pageSummary } from "./paging";
 
@@ -30,6 +31,7 @@ export function Table<Row>({
   rowKey,
   paging,
   empty,
+  ...rest
 }: {
   caption: string;
   columns: Column<Row>[];
@@ -37,10 +39,10 @@ export function Table<Row>({
   rowKey: (row: Row) => string;
   paging?: Paging;
   empty?: ReactNode;
-}) {
+} & Omit<HTMLAttributes<HTMLDivElement>, "children">) {
   const info = paging ? pageInfo(paging.page, paging.pageSize, paging.total) : null;
   return (
-    <div>
+    <div {...rest}>
       <div className="kit-table-wrap">
         {rows.length === 0 ? (
           (empty ?? <EmptyState title="Nothing here yet" />)

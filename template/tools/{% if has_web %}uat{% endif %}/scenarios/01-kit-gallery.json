@@ -1,5 +1,5 @@
 {
-  "_comment": "Example scenario: a walk through the UI kit gallery of the generated web app (web/app/kit/page.tsx). Copy it for a feature's sign-off walk: one file per scenario, a caption per step saying what the user does and sees, and at least one expectation per step. Format: lib/scenario.ts. Run: npm run uat -- --base-url <url> --scenario 01-kit-gallery",
+  "_comment": "Example scenario: a walk through the UI kit gallery of the generated web app (web/app/kit/page.tsx). The testId checks prove the kit components pass HTML attributes through; a feature walk prefers role and name targets. Copy it for a feature's sign-off walk: one file per scenario, a caption per step saying what the user does and sees, and at least one expectation per step. Format: lib/scenario.ts. Run: npm run uat -- --base-url <url> --scenario 01-kit-gallery",
   "title": "Browse the UI kit gallery",
   "viewport": { "width": 1280, "height": 800 },
   "step_timeout_ms": 10000,
@@ -10,6 +10,9 @@
       "action": { "goto": "/kit" },
       "expect": [
         { "visible": { "role": "heading", "name": "UI kit", "exact": true } },
+        { "visible": { "testId": "kit-gallery-header" } },
+        { "visible": { "testId": "kit-gallery-tabs" } },
+        { "visible": { "testId": "kit-sample-table" } },
         { "count": 10, "of": { "css": "table tbody tr" } },
         { "contains": "Showing 1-10 of 47", "in": { "role": "navigation", "name": "Sample items pages" } }
       ]
@@ -26,7 +29,7 @@
     {
       "caption": "Open the drawer: the sample item's panel slides in",
       "action": { "click": { "role": "button", "name": "Open drawer" } },
-      "expect": [{ "visible": { "role": "dialog", "name": "Sample item 01" } }]
+      "expect": [{ "visible": { "role": "dialog", "name": "Sample item 01" } }, { "visible": { "testId": "kit-sample-drawer" } }]
     },
     {
       "caption": "Save in the drawer: the panel closes and a confirmation appears",
@@ -41,7 +44,8 @@
       "action": { "click": { "role": "link", "name": "Empty states" } },
       "expect": [
         { "url_contains": "tab=empty" },
-        { "visible": { "role": "heading", "name": "No sample items yet" } }
+        { "visible": { "role": "heading", "name": "No sample items yet" } },
+        { "visible": { "testId": "kit-sample-empty" } }
       ]
     }
   ]
