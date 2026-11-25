@@ -3,6 +3,25 @@
 All notable changes of the template. Written by release-please from the Conventional Commit titles merged to `main`
 ([`VERSIONING.md`](VERSIONING.md)).
 
+## 1.3.1 (2026-11-25)
+
+### Bug Fixes
+
+- Web skeleton: Next.js pinned at 16.4.6 instead of 16.4.2. Seven published moderate advisories cover 16.4.2 (the
+  `next` range up to 16.4.4: cache leaks and cache poisoning with `use cache` and Cache Components, an SVG rejection
+  bypass in image optimization, an HttpOnly cookie exposure on Edge runtime routes, cross-client response injection in
+  self-hosted apps forwarding fetched responses); `npm audit` of a fresh web project now reports none, and `next build`
+  no longer prints the security notice. React, TypeScript and the other pins do not change.
+- Template CI: the render job's `copier update` check starts from v1.3.0, and a test keeps the `next` pin exact and
+  at or above 16.4.5. The update check now also covers a project from a release that ships the kit lint: it writes
+  its baseline with a page of its own first, and the update must keep that baseline and leave the lint on (from a
+  release before the kit, as before, the update adds no baseline and the lint only reports).
+
+### Upgrade note
+
+`copier update` changes one line of `web/package.json`. Run `npm install` in `web/` and commit the lock file when the
+project keeps one. No file is added, moved or removed.
+
 ## 1.3.0 (2026-11-25)
 
 ### Features

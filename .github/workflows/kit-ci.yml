@@ -32,7 +32,7 @@ env:
   OASDIFF_VERSION: 1.33.0
   OASDIFF_SHA256: 43a4e328e2d13ba1552d760aa68d2485c75c5621f309f6ff64ae895188345247
   # The release a generated project is updated from in the render job (the latest tag before this one).
-  UPDATE_FROM: v1.2.0
+  UPDATE_FROM: v1.3.0
   # Playwright of the web end-to-end job: the pin of tools/uat/package.json and of the UI smoke (tests check they agree).
   PLAYWRIGHT_VERSION: 1.64.1
 

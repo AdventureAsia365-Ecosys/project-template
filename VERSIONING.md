@@ -3,7 +3,7 @@
 | Item | Rule |
 |---|---|
 | Version scheme | Semantic version tags `vMAJOR.MINOR.PATCH`. Copier generates and updates from git tags |
-| Patch | Wording and link fixes in templates or docs; no file added, moved or removed |
+| Patch | Wording and link fixes in templates or docs, or a pinned dependency moved to a fixed release (a security advisory, a bug); no file added, moved or removed |
 | Minor | A new optional file, check or Copier question with a default that keeps today's output |
 | Major (breaking) | A renamed or removed file or question, a new folder layout, or a new check that fails on a project that passed before. Ships a Copier migration (`_migrations` in `copier.yml`) and an upgrade note in the changelog |
 | Release | release-please keeps a release PR open from the Conventional Commit titles merged to `main`; merging it tags the version and writes `CHANGELOG.md`. A release is cut after each change to the copied sources, because the byte-copy guard keeps CI red until the copies match |
