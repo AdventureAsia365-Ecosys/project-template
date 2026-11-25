@@ -20,5 +20,12 @@ Pages import from `@/app/_kit`. `lib/kitLint.ts` runs in `npm test` and fails on
 page's own, a class outside the kit, a raw `<button>`, `<table>` or `<dialog>`, or a page that imports nothing from
 the kit. A real exception carries the comment `kit-lint: ignore <rule>` with its reason on the same line.
 
-A component the pages need and the kit lacks is added here, with its gallery entry, in its own PR. Every HTML
-attribute passes through the components (a `data-testid` included), so tests can target them.
+`kit-lint-baseline.json` (next to `package.json`) lists findings a project accepted when it adopted the kit, counted
+per file and rule; it is empty in a fresh project. The lint fails on a finding beyond those counts and on a count
+above what it finds, so the list only shrinks. A project updated from a template release before the kit has no
+baseline file: its lint only reports (in the `npm test` output) until `npm run kit-lint -- --write-baseline` writes
+one. `npm run kit-lint` prints the findings on their own.
+
+A component the pages need and the kit lacks is added here, with its gallery entry, in its own PR. Every component
+that renders an element passes the other HTML attributes to it (a `data-testid` included), so tests can target them;
+`ToastProvider` renders none of its own. `_kit/attributes.test.ts` checks this for every component.

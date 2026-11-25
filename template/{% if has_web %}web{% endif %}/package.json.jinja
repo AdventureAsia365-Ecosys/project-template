@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "test": "node --test --experimental-strip-types lib/*.test.ts app/_kit/*.test.ts"{% if ui_smoke %},
+    "test": "node --test --experimental-strip-types lib/*.test.ts app/_kit/*.test.ts",
+    "kit-lint": "node --experimental-strip-types lib/kitLintCli.ts"{% if ui_smoke %},
     "smoke": "playwright test"{% endif %}
   },
   "dependencies": {

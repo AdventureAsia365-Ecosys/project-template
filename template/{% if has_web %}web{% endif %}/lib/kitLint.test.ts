@@ -2,13 +2,33 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { formatFindings, lintSource, lintTree } from "./kitLint.ts";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import {
+  baselineJson,
+  compareToBaseline,
+  formatFindings,
+  lintSource,
+  lintTree,
+  readBaseline,
+  type KitFinding,
+} from "./kitLint.ts";
 
 const rules = (file: string, text: string) => lintSource(file, text).map((f) => f.rule);
 
-test("the app builds from the kit (whole tree)", () => {
-  const findings = lintTree(fileURLToPath(new URL("..", import.meta.url)));
-  assert.equal(formatFindings(findings), "");
+test("the app builds from the kit (whole tree, against kit-lint-baseline.json)", (t) => {
+  const webRoot = fileURLToPath(new URL("..", import.meta.url));
+  const findings = lintTree(webRoot);
+  const baseline = readBaseline(webRoot);
+  if (baseline === null) {
+    // A project updated from a template release before the kit: report only, until it writes its baseline.
+    t.diagnostic(`kit lint: report only (no kit-lint-baseline.json): ${findings.length} finding(s)`);
+    if (findings.length) t.diagnostic(formatFindings(findings));
+    t.diagnostic("npm run kit-lint -- --write-baseline accepts today's findings and fails on any new one");
+    return;
+  }
+  assert.equal(compareToBaseline(findings, baseline).join("\n"), "");
 });
 
 test("a page that uses the kit passes", () => {
@@ -43,4 +63,41 @@ test("the kit itself, tests and an explained exception are not findings", () => 
   assert.deepEqual(rules("app/layout.tsx", 'import "./_kit/kit.css";'), []);
   const line = '<iframe style={{ border: 0 }} /> {/* kit-lint: ignore inline-style (third-party embed size) */}';
   assert.deepEqual(rules("app/a/Embed.tsx", line), []);
+});
+
+const finding = (file: string, rule: string, line = 1): KitFinding => ({ file, line, rule, message: "invented" });
+
+test("the baseline accepts counted findings and fails on a new one or a stale count", () => {
+  const today = [finding("app/a/page.tsx", "inline-style", 3), finding("app/a/page.tsx", "inline-style", 9), finding("app/b/Card.tsx", "class")];
+  const baseline = JSON.parse(baselineJson(today)).accepted;
+  assert.deepEqual(baseline, { "app/a/page.tsx": { "inline-style": 2 }, "app/b/Card.tsx": { class: 1 } });
+  assert.deepEqual(compareToBaseline(today, baseline), []);
+  // a third inline style in the same file, and a rule the file did not break before
+  const more = [...today, finding("app/a/page.tsx", "inline-style", 12), finding("app/a/page.tsx", "raw-element", 4)];
+  const problems = compareToBaseline(more, baseline);
+  assert.ok(problems.some((p) => p.startsWith("app/a/page.tsx: inline-style: 3 found, the baseline accepts 2")), problems.join("\n"));
+  assert.ok(problems.some((p) => p.startsWith("app/a/page.tsx: raw-element: 1 found, the baseline accepts 0")), problems.join("\n"));
+  // a fixed finding lowers the count: the baseline only shrinks
+  const fixed = compareToBaseline(today.slice(1), baseline);
+  assert.deepEqual(fixed, ["app/a/page.tsx: inline-style: the baseline accepts 2, 1 found: lower it in kit-lint-baseline.json"]);
+  // an empty baseline (a fresh project) fails on every finding
+  assert.equal(compareToBaseline(today, {}).filter((p) => !p.startsWith("  ")).length, 2);
+});
+
+test("a missing baseline file is report-only; a malformed one fails", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "kit-lint-"));
+  try {
+    assert.equal(readBaseline(dir), null);
+    writeFileSync(path.join(dir, "kit-lint-baseline.json"), baselineJson([]));
+    assert.deepEqual(readBaseline(dir), {});
+    writeFileSync(path.join(dir, "kit-lint-baseline.json"), JSON.stringify({ accepted: { "app/x.tsx": { class: 0 } } }));
+    assert.throws(() => readBaseline(dir), /whole counts above 0/);
+    writeFileSync(path.join(dir, "kit-lint-baseline.json"), JSON.stringify({ accepted: [] }));
+    assert.throws(() => readBaseline(dir), /"accepted" maps a file/);
+    mkdirSync(path.join(dir, "app", "orders"), { recursive: true });
+    writeFileSync(path.join(dir, "app", "orders", "page.tsx"), "export default () => <div style={{ margin: 4 }} />;");
+    assert.deepEqual(lintTree(dir).map((f) => f.rule), ["inline-style", "page-import"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

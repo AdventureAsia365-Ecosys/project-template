@@ -53,8 +53,8 @@ releases into the project as a normal PR ([`VERSIONING.md`](VERSIONING.md)).
 | `.claude/` | Guardrail hooks (subagents never push, merge, apply or delete; MCP writes blocked for subagents; shell-mistake refusals; optional stop hook and personal-data guard) with their red-team tests, and the generic skills |
 | `.github/` | CI, PR title, docs lint, secret scan (gitleaks, pinned and checksum-verified), workflow lint, release-please, post-deploy verify, optional API contract check and UI smoke, UAT runs on demand for web projects; code-health and coverage ratchets |
 | `api/`, `db/`, `web/`, `lambda/`, `infra/` | Skeletons for the chosen stacks. The API's job and settings stores run on Postgres when `DATABASE_URL` is set (in-memory ones for tests); the API CI job runs the integration tests on a throwaway Postgres |
-| `web/app/_kit/` | The UI kit: neutral light and dark tokens, Button, Table with server paging, EmptyState, Drawer, Toast, PageHeader, Tabs, status Badge; a gallery at `/kit`; a kit lint in `npm test` that fails a page with ad-hoc styles |
-| `tools/uat/` | A runnable UAT harness: JSON scenarios with an assertion on every step, Playwright screenshots, optional video, captions, and a report index; one example scenario walks the kit gallery |
+| `web/app/_kit/` | The UI kit: neutral light and dark tokens, Button, Table with server paging, EmptyState, Drawer, Toast, PageHeader, Tabs, status Badge; a gallery at `/kit`; a kit lint in `npm test` that fails a page with ad-hoc styles (a project updated from an earlier release starts in report-only mode until it writes `web/kit-lint-baseline.json`) |
+| `tools/uat/` | A runnable UAT harness: JSON scenarios with an assertion on every step, Playwright screenshots, optional video, captions, and a report index; secrets only through `value_env` (masked in screenshots and video, kept out of the results); one example scenario walks the kit gallery |
 
 Every part of the kit design ships as of 1.3.0.
 

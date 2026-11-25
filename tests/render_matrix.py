@@ -23,8 +23,10 @@ The guardrail red-team scripts run once (first variant): they are byte copies an
 UAT harness and play its example scenario against it with a video (the walk must pass, the take folder, captions and
 report index must be written), and play a scenario that must fail (exit 1, listed as FAIL). Needs node 22 and
 Playwright's Chromium (npx playwright install chromium). One next build at a time; NODE_OPTIONS caps its memory.
---update-from <tag>: also generate the defaults from that release tag, commit, `copier update` to the working tree
-and fail on any .rej file or conflict marker (a minor release must update an untouched project cleanly).
+--update-from <tag>: also generate the defaults from that release tag, add a page of the project's own that breaks the
+kit lint (an inline style), commit, `copier update` to the working tree and fail on any .rej file or conflict marker,
+on a kit lint baseline the update added, or on red web unit tests (a minor release must not fail a project that passed
+before: the kit lint of an updated project only reports until it writes its baseline).
 
 Usage: python3 tests/render_matrix.py [--variant NAME ...] [--keep DIR] [--venv DIR] [--actionlint BIN] [--markdownlint]
        [--oasdiff BIN] [--update-from TAG] [--pg-dsn URL] [--web-e2e]
@@ -111,6 +113,7 @@ UI_KIT = [
     "web/app/_kit/paging.test.ts",
     "web/app/kit/page.tsx",
     "web/lib/kitLint.ts",
+    "web/kit-lint-baseline.json",
 ]
 UAT = [
     "tools/uat/run.ts",
@@ -331,8 +334,15 @@ def web_e2e(project: Path, port: int = 3917) -> list[tuple[str, bool, str]]:
     return results
 
 
+OWN_PAGE = """export default function Legacy() {
+  return <main style={{ padding: 16 }}>A page built before the kit</main>;
+}
+"""
+
+
 def update_check(tag: str, dest: Path, copier: str) -> tuple[bool, str]:
-    """Generate the defaults from <tag>, commit, update to the working tree: no .rej file, no conflict marker."""
+    """Generate the defaults from <tag>, add a page of the project's own that breaks the kit lint, commit, update to
+    the working tree: no .rej file, no conflict marker, no kit lint baseline added, the web unit tests still pass."""
     data = VARIANTS["defaults"]
     cmd = [copier, "copy", "--vcs-ref", tag, "--defaults", "--quiet"]
     for k, v in data.items():
@@ -340,6 +350,10 @@ def update_check(tag: str, dest: Path, copier: str) -> tuple[bool, str]:
     ok, msg = run(cmd + [str(REPO), str(dest)], REPO)
     if not ok:
         return False, f"copy {tag}: {msg}"
+    own = dest / "web" / "app" / "legacy" / "page.tsx"
+    if (dest / "web").is_dir():
+        own.parent.mkdir(parents=True, exist_ok=True)
+        own.write_text(OWN_PAGE, encoding="utf-8")
     for git in (["init", "-q", "-b", "main"], ["add", "-A"], ["commit", "-q", "-m", "chore: generate"]):
         subprocess.run(["git", *git], cwd=dest, check=True, capture_output=True)
     ok, msg = run([copier, "update", "--vcs-ref", "HEAD", "--defaults", "--quiet"], dest)
@@ -352,7 +366,20 @@ def update_check(tag: str, dest: Path, copier: str) -> tuple[bool, str]:
         if p.is_file() and ".git/" not in p.as_posix() and "<<<<<<< " in p.read_text(encoding="utf-8", errors="replace")
     ]
     changed = subprocess.run(["git", "status", "--porcelain"], cwd=dest, capture_output=True, text=True).stdout
-    return not rej and not marks, f"{len(changed.splitlines())} path(s) changed, .rej {rej[:5]}, conflicts {marks[:5]}"
+    msg = f"{len(changed.splitlines())} path(s) changed, .rej {rej[:5]}, conflicts {marks[:5]}"
+    web = dest / "web"
+    if not web.is_dir():
+        return not rej and not marks, msg
+    baseline_added = (web / "kit-lint-baseline.json").exists()
+    web_ok = True
+    if shutil.which("node"):
+        tests = sorted(p.relative_to(web).as_posix() for p in [*web.glob("lib/*.test.ts"), *web.glob("app/_kit/*.test.ts")])
+        t = subprocess.run(["node", "--test", "--experimental-strip-types", *tests], cwd=web, capture_output=True, text=True)
+        web_ok, reported = t.returncode == 0, "kit lint: report only" in t.stdout
+        msg += f", web tests {'pass' if web_ok else 'FAIL'}{' (kit lint report only)' if reported else ''}"
+        web_ok = web_ok and reported
+    msg += f", kit lint baseline {'ADDED' if baseline_added else 'not added'}"
+    return not rej and not marks and not baseline_added and web_ok, msg
 
 
 def render(variant: str, data: dict[str, str], dest: Path, copier: str) -> tuple[bool, str]:

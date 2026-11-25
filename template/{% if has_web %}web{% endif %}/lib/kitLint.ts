@@ -7,7 +7,13 @@
 //   class           a className literal with a class that is not a kit class (kit-...);
 //   page-import     a page.tsx that imports nothing from the kit.
 // A line that must break a rule carries the comment "kit-lint: ignore <rule>" with the reason next to it.
-import { readdirSync, readFileSync, statSync } from "node:fs";
+//
+// Baseline (kit-lint-baseline.json next to package.json): the findings a project accepted when it adopted the kit,
+// counted per file and rule. A fresh project starts with an empty one, so every finding fails. npm test fails on a
+// finding beyond these counts and on a count above what is found (the list only shrinks). A project updated from a
+// template release before the kit has no baseline file (Copier creates it on a fresh copy only): the lint then only
+// reports its findings, and `npm run kit-lint -- --write-baseline` writes the file and turns enforcement on.
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 export type KitFinding = { file: string; line: number; rule: string; message: string };
@@ -78,4 +84,81 @@ export function lintTree(webRoot: string): KitFinding[] {
 
 export function formatFindings(findings: KitFinding[]): string {
   return findings.map((f) => `${f.file}:${f.line}: ${f.rule}: ${f.message}`).join("\n");
+}
+
+/** Accepted findings: file -> rule -> count. */
+export type KitBaseline = Record<string, Record<string, number>>;
+
+export const BASELINE_FILE = "kit-lint-baseline.json";
+
+const BASELINE_COMMENT =
+  "Kit lint baseline (lib/kitLint.ts): findings accepted when the project adopted the kit, counted per file and rule. " +
+  "npm test fails on a finding beyond these counts and on a count above what is found, so the list only shrinks. " +
+  "A fresh project starts empty. Rewrite: npm run kit-lint -- --write-baseline";
+
+export function countFindings(findings: KitFinding[]): KitBaseline {
+  const out: KitBaseline = {};
+  for (const f of findings) {
+    out[f.file] ??= {};
+    out[f.file][f.rule] = (out[f.file][f.rule] ?? 0) + 1;
+  }
+  return out;
+}
+
+/** The project's baseline, or null when the file is missing (report-only mode). A malformed file throws. */
+export function readBaseline(webRoot: string): KitBaseline | null {
+  const file = path.join(webRoot, BASELINE_FILE);
+  if (!existsSync(file)) return null;
+  const raw: unknown = JSON.parse(readFileSync(file, "utf8"));
+  const accepted = (raw as { accepted?: unknown } | null)?.accepted;
+  const fail = () => {
+    throw new Error(`${BASELINE_FILE}: "accepted" maps a file to { rule: count } with whole counts above 0`);
+  };
+  if (typeof accepted !== "object" || accepted === null || Array.isArray(accepted)) fail();
+  for (const rules of Object.values(accepted as object)) {
+    if (typeof rules !== "object" || rules === null || Array.isArray(rules)) fail();
+    for (const n of Object.values(rules as object)) if (!Number.isInteger(n) || (n as number) < 1) fail();
+  }
+  return accepted as KitBaseline;
+}
+
+export function baselineJson(findings: KitFinding[]): string {
+  const counts = countFindings(findings);
+  const accepted: KitBaseline = {};
+  for (const file of Object.keys(counts).sort()) {
+    accepted[file] = {};
+    for (const rule of Object.keys(counts[file]).sort()) accepted[file][rule] = counts[file][rule];
+  }
+  return JSON.stringify({ _comment: BASELINE_COMMENT, accepted }, null, 2) + "\n";
+}
+
+export function writeBaseline(webRoot: string, findings: KitFinding[]): string {
+  const file = path.join(webRoot, BASELINE_FILE);
+  writeFileSync(file, baselineJson(findings));
+  return file;
+}
+
+/** What fails against the baseline: findings beyond an accepted count (all of that file and rule are listed, since
+ * the new one cannot be told apart), and accepted counts above what is found (lower them). Empty when it passes. */
+export function compareToBaseline(findings: KitFinding[], baseline: KitBaseline): string[] {
+  const counts = countFindings(findings);
+  const problems: string[] = [];
+  for (const [file, rules] of Object.entries(counts)) {
+    for (const [rule, found] of Object.entries(rules)) {
+      const accepted = baseline[file]?.[rule] ?? 0;
+      if (found > accepted) {
+        problems.push(`${file}: ${rule}: ${found} found, the baseline accepts ${accepted}:`);
+        problems.push(...findings.filter((f) => f.file === file && f.rule === rule).map((f) => `  ${formatFindings([f])}`));
+      }
+    }
+  }
+  for (const [file, rules] of Object.entries(baseline)) {
+    for (const [rule, accepted] of Object.entries(rules)) {
+      const found = counts[file]?.[rule] ?? 0;
+      if (found < accepted) {
+        problems.push(`${file}: ${rule}: the baseline accepts ${accepted}, ${found} found: lower it in ${BASELINE_FILE}`);
+      }
+    }
+  }
+  return problems;
 }

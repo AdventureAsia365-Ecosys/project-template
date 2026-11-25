@@ -2,12 +2,18 @@
 # (or a local checkout path). Update a generated project: copier update   (reads .copier-answers.yml).
 # Versions are git tags vMAJOR.MINOR.PATCH (VERSIONING.md). Nothing here runs a task: --trust is not needed today.
 
-_min_copier_version: "9.4.0"
+_min_copier_version: "9.6.0"
 _subdirectory: template
 _answers_file: .copier-answers.yml
 _templates_suffix: .jinja
 _envops:
   keep_trailing_newline: true
+# Files a fresh copy creates and an update never adds (`_copier_operation` in _exclude needs Copier 9.6 or later).
+# web/kit-lint-baseline.json turns the kit lint on. A project updated from a release before the kit gets no baseline,
+# so its lint only reports until the project writes one (`npm run kit-lint -- --write-baseline`): a minor release
+# never fails a project that passed before (VERSIONING.md).
+_exclude:
+  - "{% if _copier_operation == 'update' %}web/kit-lint-baseline.json{% endif %}"
 
 # Major versions that rename or move files add a migration here (VERSIONING.md), for example:
 #   - version: v2.0.0
